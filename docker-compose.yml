@@ -1,0 +1,18 @@
+services:
+  devnull:
+    build: .
+    image: devnull:latest
+    env_file:
+      - .env
+    environment:
+      - DEVNULL_HOME=/opt/devnull
+    volumes:
+      # Mount your project as the workspace devnull operates on.
+      - .:/workspace
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    # Override the command per run, e.g.:
+    #   docker compose run --rm devnull --task "fix the bug in src/app.js"
+    #   docker compose run --rm devnull --chat
+    command: ["--help"]
