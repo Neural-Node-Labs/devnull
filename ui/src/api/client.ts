@@ -93,7 +93,8 @@ export interface SkillListEntry {
 async function request<T>(
   method: string,
   path: string,
-  body?: unknown
+  body?: unknown,
+  signal?: AbortSignal
 ): Promise<ApiResponse<T>> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -108,6 +109,7 @@ async function request<T>(
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
+    signal,
   });
 
   const json: ApiResponse<T> = await res.json();
@@ -155,8 +157,8 @@ export const api = {
   },
 
   /** Send a chat message. */
-  async chat(task: string, planMode?: "auto" | "always" | "never"): Promise<ApiResponse> {
-    return request("POST", "/chat", { task, planMode });
+  async chat(task: string, planMode?: "auto" | "always" | "never", signal?: AbortSignal): Promise<ApiResponse> {
+    return request("POST", "/chat", { task, planMode }, signal);
   },
 
   /** Generate a plan without executing. */
@@ -197,3 +199,4 @@ export const api = {
     return request("POST", "/logout");
   },
 };
+

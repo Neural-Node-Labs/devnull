@@ -304,3 +304,4 @@ export function TelemetryPage() {
     </div>
   );
 }
+

@@ -112,3 +112,60 @@ input::placeholder, textarea::placeholder {
   color: var(--color-text-secondary);
   opacity: 0.6;
 }
+
+/* ─── Loading Spinner ────────────────────────────────────────────────────── */
+
+.devnull-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid var(--color-border);
+  border-top-color: var(--color-primary);
+  animation: devnull-spin 0.7s linear infinite;
+}
+
+@keyframes devnull-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ─── Responsive Navbar ──────────────────────────────────────────────────── */
+
+.devnull-nav-toggle {
+  display: none;
+}
+
+@media (max-width: 860px) {
+  .devnull-nav-links,
+  .devnull-nav-user {
+    display: none !important;
+  }
+
+  .devnull-nav-toggle {
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+  }
+}
+
+/* ─── Responsive Content Padding ─────────────────────────────────────────── */
+
+@media (max-width: 520px) {
+  .devnull-main {
+    padding: 16px !important;
+  }
+}
+
+/* ─── Motion & Accessibility ─────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+

@@ -1,72 +1,54 @@
-import { useState, useEffect } from 'react';
-import { api, type SkillListEntry } from '../api/client';
+import React, { useState, useEffect } from "react";
+import { api, type SkillListEntry } from "../api/client";
 
 interface TestResult {
   name: string;
-  status: 'pass' | 'fail' | 'pending';
+  status: "pass" | "fail" | "pending";
   message?: string;
 }
+
+const INITIAL_TESTS: TestResult[] = [
+  { name: "API Connection", status: "pending" },
+  { name: "Health Check", status: "pending" },
+  { name: "Skills Loaded", status: "pending" },
+  { name: "Telemetry Available", status: "pending" },
+  { name: "React Render", status: "pending" },
+];
 
 export default function DiagnosticsPage() {
   const [skills, setSkills] = useState<SkillListEntry[]>([]);
   const [skillsLoading, setSkillsLoading] = useState(false);
-  const [health, setHealth] = useState<{ status: string; version: string; uptime: number } | null>(null);
-  const [testResults, setTestResults] = useState<TestResult[]>([
-    { name: 'API Connection', status: 'pending' },
-    { name: 'Health Check', status: 'pending' },
-    { name: 'Skills Loaded', status: 'pending' },
-    { name: 'Telemetry Available', status: 'pending' },
-    { name: 'React Render', status: 'pending' },
-  ]);
+  const [running, setRunning] = useState(false);
+  const [testResults, setTestResults] = useState<TestResult[]>(INITIAL_TESTS);
+
+  const setTest = (name: string, patch: Partial<TestResult>) => {
+    setTestResults((prev) => prev.map((t) => (t.name === name ? { ...t, ...patch } : t)));
+  };
 
   const runTests = async () => {
-    // Test 1: API Connection
-    setTestResults((prev) =>
-      prev.map((t) => (t.name === 'API Connection' ? { ...t, status: 'pending' as const } : t))
-    );
+    setRunning(true);
+    setTestResults(INITIAL_TESTS.map((t) => ({ ...t, status: "pending" })));
+
+    // Test 1 + 2: API Connection & Health Check (health is read once, not from
+    // stale state, so the "Health Check" result is accurate on every run)
+    let healthOk = false;
     try {
       const healthRes = await api.health();
-      if (healthRes.success) {
-        setHealth(healthRes.data || null);
-        setTestResults((prev) =>
-          prev.map((t) =>
-            t.name === 'API Connection'
-              ? { ...t, status: 'pass' as const, message: 'API is reachable' }
-              : t
-          )
-        );
+      if (healthRes.success && healthRes.data) {
+        setTest("API Connection", { status: "pass", message: "API is reachable" });
+        setTest("Health Check", {
+          status: healthRes.data.status === "ok" ? "pass" : "fail",
+          message: `Status: ${healthRes.data.status}, Version: ${healthRes.data.version}`,
+        });
+        healthOk = healthRes.data.status === "ok";
       } else {
-        setTestResults((prev) =>
-          prev.map((t) =>
-            t.name === 'API Connection'
-              ? { ...t, status: 'fail' as const, message: healthRes.error || 'API error' }
-              : t
-          )
-        );
+        setTest("API Connection", { status: "fail", message: healthRes.error || "API error" });
+        setTest("Health Check", { status: "fail", message: "Skipped — API unreachable" });
       }
     } catch (err) {
-      setTestResults((prev) =>
-        prev.map((t) =>
-          t.name === 'API Connection'
-            ? { ...t, status: 'fail' as const, message: String(err) }
-            : t
-        )
-      );
-    }
-
-    // Test 2: Health Check
-    if (health) {
-      setTestResults((prev) =>
-        prev.map((t) =>
-          t.name === 'Health Check'
-            ? {
-                ...t,
-                status: health.status === 'ok' ? 'pass' as const : 'fail' as const,
-                message: `Status: ${health.status}, Version: ${health.version}`,
-              }
-            : t
-        )
-      );
+      const msg = String(err);
+      setTest("API Connection", { status: "fail", message: msg });
+      setTest("Health Check", { status: "fail", message: "Skipped — API unreachable" });
     }
 
     // Test 3: Skills
@@ -76,214 +58,204 @@ export default function DiagnosticsPage() {
       if (skillsRes.success && skillsRes.data) {
         const skillsData = skillsRes.data as SkillListEntry[];
         setSkills(skillsData);
-        setTestResults((prev) =>
-          prev.map((t) =>
-            t.name === 'Skills Loaded'
-              ? { ...t, status: 'pass' as const, message: `${skillsData.length} skills loaded` }
-              : t
-          )
-        );
+        setTest("Skills Loaded", { status: "pass", message: `${skillsData.length} skills loaded` });
       } else {
-        setTestResults((prev) =>
-          prev.map((t) =>
-            t.name === 'Skills Loaded'
-              ? { ...t, status: 'fail' as const, message: skillsRes.error || 'No skills' }
-              : t
-          )
-        );
+        setTest("Skills Loaded", { status: "fail", message: skillsRes.error || "No skills" });
       }
     } catch (err) {
-      setTestResults((prev) =>
-        prev.map((t) =>
-          t.name === 'Skills Loaded'
-            ? { ...t, status: 'fail' as const, message: String(err) }
-            : t
-        )
-      );
+      setTest("Skills Loaded", { status: "fail", message: String(err) });
     } finally {
       setSkillsLoading(false);
     }
 
     // Test 4: Telemetry
     try {
-      const telemetryRes = await api.telemetry('thinking', 5);
+      const telemetryRes = await api.telemetry("thinking", 5);
       if (telemetryRes.success) {
         const telemetryData = telemetryRes.data as { entries?: unknown[] } | undefined;
-        setTestResults((prev) =>
-          prev.map((t) =>
-            t.name === 'Telemetry Available'
-              ? {
-                  ...t,
-                  status: 'pass' as const,
-                  message: `${telemetryData?.entries?.length || 0} entries`,
-                }
-              : t
-          )
-        );
+        setTest("Telemetry Available", {
+          status: "pass",
+          message: `${telemetryData?.entries?.length || 0} entries`,
+        });
       } else {
-        setTestResults((prev) =>
-          prev.map((t) =>
-            t.name === 'Telemetry Available'
-              ? { ...t, status: 'fail' as const, message: telemetryRes.error }
-              : t
-          )
-        );
+        setTest("Telemetry Available", { status: "fail", message: telemetryRes.error });
       }
     } catch (err) {
-      setTestResults((prev) =>
-        prev.map((t) =>
-          t.name === 'Telemetry Available'
-            ? { ...t, status: 'fail' as const, message: String(err) }
-            : t
-        )
-      );
+      setTest("Telemetry Available", { status: "fail", message: String(err) });
     }
 
     // Test 5: React Render (always passes if we got here)
-    setTestResults((prev) =>
-      prev.map((t) =>
-        t.name === 'React Render'
-          ? { ...t, status: 'pass' as const, message: 'Component rendered successfully' }
-          : t
-      )
-    );
+    setTest("React Render", { status: "pass", message: "Component rendered successfully" });
+
+    setRunning(false);
+    void healthOk; // reserved for future use (e.g. banner styling)
   };
 
   useEffect(() => {
     runTests();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const sectionStyle: React.CSSProperties = {
+    background: "var(--color-card-bg)",
+    border: "1px solid var(--color-border)",
+    borderRadius: "10px",
+    padding: "24px",
+    marginBottom: "24px",
+  };
+
+  const statusColor = (status: TestResult["status"]) =>
+    status === "pass" ? "var(--color-success)" : status === "fail" ? "var(--color-error)" : "var(--color-warning)";
+
+  const statusIcon = (status: TestResult["status"]) =>
+    status === "pass" ? "✅" : status === "fail" ? "❌" : "⏳";
+
   return (
-    <div className="flex flex-col h-full">
-      <div className="border-b border-gray-800 p-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-semibold">Diagnostics</h2>
-            <p className="text-sm text-gray-500">System health checks and component testing</p>
-          </div>
-          <button
-            onClick={runTests}
-            className="px-3 py-1.5 text-sm rounded-lg bg-purple-600 hover:bg-purple-500 text-white transition-colors"
-          >
-            Run Tests
-          </button>
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "24px" }}>
+        <div>
+          <h1 style={{ fontSize: "24px", fontWeight: 700, marginBottom: "4px" }}>Diagnostics</h1>
+          <p style={{ color: "var(--color-text-secondary)", fontSize: "14px", margin: 0 }}>
+            System health checks and component testing
+          </p>
         </div>
+        <button
+          onClick={runTests}
+          disabled={running}
+          style={{
+            padding: "8px 16px",
+            borderRadius: "6px",
+            border: "none",
+            background: running ? "var(--color-text-secondary)" : "var(--color-primary)",
+            color: "#fff",
+            fontSize: "13px",
+            fontWeight: 600,
+            cursor: running ? "not-allowed" : "pointer",
+          }}
+        >
+          {running ? "Running…" : "Run tests"}
+        </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-6">
-        {/* Test Results */}
-        <section>
-          <h3 className="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">
-            Test Results
-          </h3>
-          <div className="space-y-2">
-            {testResults.map((test) => (
-              <div
-                key={test.name}
-                className={`flex items-center justify-between p-3 rounded-xl border ${
-                  test.status === 'pass'
-                    ? 'bg-green-900/10 border-green-800/30'
-                    : test.status === 'fail'
-                    ? 'bg-red-900/10 border-red-800/30'
-                    : 'bg-gray-900 border-gray-800'
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <span>
-                    {test.status === 'pass' ? '✅' : test.status === 'fail' ? '❌' : '⏳'}
-                  </span>
-                  <div>
-                    <p className="text-sm text-gray-200">{test.name}</p>
-                    {test.message && (
-                      <p className="text-xs text-gray-500 mt-0.5">{test.message}</p>
-                    )}
-                  </div>
+      {/* Test Results */}
+      <section style={{ marginBottom: "24px" }}>
+        <h2 style={{ fontSize: "12px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--color-text-secondary)", marginBottom: "12px" }}>
+          Test results
+        </h2>
+        <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+          {testResults.map((test) => (
+            <div
+              key={test.name}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "12px 16px",
+                borderRadius: "8px",
+                border: "1px solid var(--color-border)",
+                background:
+                  test.status === "pending"
+                    ? "var(--color-card-bg)"
+                    : `color-mix(in srgb, ${statusColor(test.status)} 8%, var(--color-card-bg))`,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                <span aria-hidden="true">{statusIcon(test.status)}</span>
+                <div>
+                  <p style={{ margin: 0, fontSize: "14px" }}>{test.name}</p>
+                  {test.message && (
+                    <p style={{ margin: "2px 0 0", fontSize: "12px", color: "var(--color-text-secondary)" }}>
+                      {test.message}
+                    </p>
+                  )}
                 </div>
-                <span
-                  className={`text-xs font-medium ${
-                    test.status === 'pass'
-                      ? 'text-green-400'
-                      : test.status === 'fail'
-                      ? 'text-red-400'
-                      : 'text-yellow-400'
-                  }`}
-                >
-                  {test.status.toUpperCase()}
-                </span>
+              </div>
+              <span style={{ fontSize: "11px", fontWeight: 700, color: statusColor(test.status), textTransform: "uppercase" }}>
+                {test.status}
+              </span>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Skills */}
+      <section style={{ marginBottom: "24px" }}>
+        <h2 style={{ fontSize: "12px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--color-text-secondary)", marginBottom: "12px" }}>
+          Loaded skills
+        </h2>
+        {skillsLoading ? (
+          <p style={{ color: "var(--color-text-secondary)", fontSize: "13px" }}>Loading skills…</p>
+        ) : skills.length === 0 ? (
+          <div style={{ ...sectionStyle, textAlign: "center", padding: "32px", marginBottom: 0 }}>
+            <p style={{ color: "var(--color-text-secondary)", fontSize: "13px", margin: 0 }}>No skills loaded</p>
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+            {skills.map((skill) => (
+              <div key={skill.name} style={{ ...sectionStyle, padding: "16px", marginBottom: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "4px" }}>
+                  <p style={{ margin: 0, fontSize: "14px", fontWeight: 600 }}>{skill.name}</p>
+                  <span
+                    style={{
+                      fontSize: "11px",
+                      padding: "2px 8px",
+                      borderRadius: "999px",
+                      background: "color-mix(in srgb, var(--color-primary) 15%, transparent)",
+                      color: "var(--color-primary)",
+                    }}
+                  >
+                    {skill.role}
+                  </span>
+                </div>
+                <p style={{ margin: "0 0 8px", fontSize: "12px", color: "var(--color-text-secondary)" }}>
+                  {skill.description}
+                </p>
+                {skill.triggers.length > 0 && (
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                    <span style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>Triggers:</span>
+                    {skill.triggers.map((t) => (
+                      <span
+                        key={t}
+                        style={{
+                          fontSize: "11px",
+                          padding: "2px 6px",
+                          borderRadius: "4px",
+                          background: "var(--color-bg-secondary)",
+                          color: "var(--color-text-secondary)",
+                        }}
+                      >
+                        {t}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
           </div>
-        </section>
+        )}
+      </section>
 
-        {/* Skills */}
-        <section>
-          <h3 className="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">
-            Loaded Skills
-          </h3>
-          {skillsLoading ? (
-            <p className="text-sm text-gray-500">Loading skills...</p>
-          ) : skills.length === 0 ? (
-            <p className="text-sm text-gray-600">No skills loaded</p>
-          ) : (
-            <div className="space-y-2">
-              {skills.map((skill) => (
-                <div
-                  key={skill.name}
-                  className="p-3 bg-gray-900 rounded-xl border border-gray-800"
-                >
-                  <div className="flex items-center justify-between mb-1">
-                    <p className="text-sm font-medium text-gray-200">{skill.name}</p>
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-purple-600/20 text-purple-400">
-                      {skill.role}
-                    </span>
-                  </div>
-                  <p className="text-xs text-gray-500 mb-2">{skill.description}</p>
-                  {skill.triggers.length > 0 && (
-                    <div className="flex items-center gap-1 flex-wrap">
-                      <span className="text-xs text-gray-600">Triggers:</span>
-                      {skill.triggers.map((t) => (
-                        <span
-                          key={t}
-                          className="text-xs px-1.5 py-0.5 rounded bg-gray-800 text-gray-400"
-                        >
-                          {t}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-
-        {/* Directives */}
-        <section>
-          <h3 className="text-sm font-medium text-gray-400 uppercase tracking-wider mb-3">
-            Directives & Protocol
-          </h3>
-          <div className="p-4 bg-gray-900 rounded-xl border border-gray-800">
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-300">Engineering Protocol</span>
-                <span className="text-xs text-green-400">✅ Loaded</span>
+      {/* Directives */}
+      <section>
+        <h2 style={{ fontSize: "12px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--color-text-secondary)", marginBottom: "12px" }}>
+          Directives & protocol
+        </h2>
+        <div style={{ ...sectionStyle, marginBottom: 0 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+            {[
+              "Engineering Protocol",
+              "System Directives",
+              "Tool Definitions",
+              "Skill Registry",
+            ].map((label) => (
+              <div key={label} style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span style={{ fontSize: "13px" }}>{label}</span>
+                <span style={{ fontSize: "12px", color: "var(--color-success)" }}>✅ Loaded</span>
               </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-300">System Directives</span>
-                <span className="text-xs text-green-400">✅ Active</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-300">Tool Definitions</span>
-                <span className="text-xs text-green-400">✅ Available</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-gray-300">Skill Registry</span>
-                <span className="text-xs text-green-400">✅ Loaded</span>
-              </div>
-            </div>
+            ))}
           </div>
-        </section>
-      </div>
+        </div>
+      </section>
     </div>
   );
 }

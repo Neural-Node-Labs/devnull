@@ -309,3 +309,4 @@ export function applyTheme(theme: Theme): void {
   root.style.setProperty("--color-input-bg", c.inputBg);
   root.style.setProperty("--color-nav-bg", c.navBg);
 }
+

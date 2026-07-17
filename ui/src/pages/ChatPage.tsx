@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { api } from "../api/client";
 
 interface ChatMessage {
@@ -17,6 +17,22 @@ export function ChatPage() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [isListening, setIsListening] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Keep the newest message in view as the conversation grows
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages, loading]);
+
+  const handleNewChat = () => {
+    if (messages.length > 0 && !confirm("Start a new chat? The current conversation will be cleared.")) return;
+    setMessages([]);
+    setInput("");
+    setError(null);
+    setCurrentPlan(null);
+    setSessionId(null);
+  };
 
   const handleSend = async () => {
     if (!input.trim() || loading) return;
@@ -34,7 +50,9 @@ export function ChatPage() {
     setSessionId(null);
 
     try {
-      const res = await api.chat(userMessage.content, planMode);
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+      const res = await api.chat(userMessage.content, planMode, controller.signal);
       if (res.success && res.data) {
         const data = res.data as any;
 
@@ -73,19 +91,31 @@ export function ChatPage() {
         ]);
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "An error occurred";
-      setError(msg);
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "system",
-          content: `❌ Error: ${msg}`,
-          timestamp: new Date(),
-        },
-      ]);
+      if (err instanceof DOMException && err.name === "AbortError") {
+        setMessages((prev) => [
+          ...prev,
+          { role: "system", content: "⏹️ Request cancelled", timestamp: new Date() },
+        ]);
+      } else {
+        const msg = err instanceof Error ? err.message : "An error occurred";
+        setError(msg);
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "system",
+            content: `❌ Error: ${msg}`,
+            timestamp: new Date(),
+          },
+        ]);
+      }
     } finally {
+      abortControllerRef.current = null;
       setLoading(false);
     }
+  };
+
+  const handleCancel = () => {
+    abortControllerRef.current?.abort();
   };
 
   const handleApprovePlan = async () => {
@@ -175,13 +205,34 @@ export function ChatPage() {
 
   return (
     <div>
-      <h1 style={{ fontSize: "24px", fontWeight: 700, marginBottom: "24px" }}>Chat</h1>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "24px" }}>
+        <h1 style={{ fontSize: "24px", fontWeight: 700, margin: 0 }}>Chat</h1>
+        {messages.length > 0 && (
+          <button
+            onClick={handleNewChat}
+            style={{
+              padding: "6px 14px",
+              borderRadius: "6px",
+              border: "1px solid var(--color-border)",
+              background: "transparent",
+              color: "var(--color-text-secondary)",
+              fontSize: "13px",
+              cursor: "pointer",
+            }}
+          >
+            + New chat
+          </button>
+        )}
+      </div>
 
       {/* Chat messages */}
       <div
+        role="log"
+        aria-live="polite"
+        aria-label="Chat messages"
         style={{
           ...sectionStyle,
-          maxHeight: "400px",
+          maxHeight: "480px",
           overflowY: "auto",
           display: "flex",
           flexDirection: "column",
@@ -209,6 +260,17 @@ export function ChatPage() {
                 maxWidth: "80%",
               }}
             >
+              <span
+                style={{
+                  fontSize: "11px",
+                  fontWeight: 600,
+                  color: "var(--color-text-secondary)",
+                  marginBottom: "4px",
+                  display: "block",
+                }}
+              >
+                {msg.role === "user" ? "You" : msg.role === "assistant" ? "devnull" : "System"}
+              </span>
               <p style={{ margin: 0, fontSize: "14px", lineHeight: "1.5", whiteSpace: "pre-wrap" }}>
                 {msg.content}
               </p>
@@ -228,6 +290,10 @@ export function ChatPage() {
         {loading && (
           <div
             style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: "12px",
               padding: "12px 16px",
               borderRadius: "8px",
               background: "var(--color-bg-secondary)",
@@ -236,9 +302,27 @@ export function ChatPage() {
               fontSize: "14px",
             }}
           >
-            Thinking...
+            <span style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span className="devnull-spinner" aria-hidden="true" />
+              Thinking...
+            </span>
+            <button
+              onClick={handleCancel}
+              style={{
+                background: "transparent",
+                border: "1px solid var(--color-border)",
+                color: "var(--color-text-secondary)",
+                borderRadius: "6px",
+                padding: "4px 10px",
+                fontSize: "12px",
+                cursor: "pointer",
+              }}
+            >
+              Cancel
+            </button>
           </div>
         )}
+        <div ref={messagesEndRef} />
       </div>
 
       {/* Plan display */}
@@ -441,7 +525,11 @@ export function ChatPage() {
             {loading ? "..." : "Send"}
           </button>
         </div>
+        <p style={{ margin: "8px 0 0", fontSize: "11px", color: "var(--color-text-secondary)" }}>
+          Enter to send · Shift+Enter for a new line
+        </p>
       </div>
     </div>
   );
 }
+

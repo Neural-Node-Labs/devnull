@@ -33,7 +33,9 @@ export function HomePage() {
 
   const cards = [
     { title: "Chat", desc: "Send tasks to the devnull agent", link: "/chat", icon: "💬" },
+    { title: "Projects", desc: "Manage workspaces and active project", link: "/projects", icon: "📁" },
     { title: "Telemetry", desc: "View agent logs and telemetry data", link: "/telemetry", icon: "📊" },
+    { title: "Diagnostics", desc: "Run health checks and view loaded skills", link: "/diagnostics", icon: "🩺" },
     { title: "Settings", desc: "Manage preferences, themes, and users", link: "/settings", icon: "⚙️" },
     ...(isAdmin ? [{ title: "Admin", desc: "User management and system admin", link: "/admin", icon: "🔒" }] : []),
   ];
@@ -135,3 +137,4 @@ function InfoBadge({ label, value, color }: { label: string; value: string; colo
     </div>
   );
 }
+

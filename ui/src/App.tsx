@@ -12,6 +12,7 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { AdminPage } from "./pages/AdminPage";
 import DiagnosticsPage from "./pages/DiagnosticsPage";
 import ProjectsPage from "./pages/ProjectsPage";
+import { NotFoundPage } from "./pages/NotFoundPage";
 
 export default function App() {
   return (
@@ -41,6 +42,7 @@ export default function App() {
                   </ProtectedRoute>
                 }
               />
+              <Route path="*" element={<NotFoundPage />} />
             </Route>
           </Routes>
         </ThemeProvider>
@@ -48,3 +50,4 @@ export default function App() {
     </BrowserRouter>
   );
 }
+
