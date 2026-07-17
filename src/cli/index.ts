@@ -11,6 +11,7 @@ import { buildIndex } from "../indexing/indexer.js";
 import { recordLesson } from "../core/protocol.js";
 import { auditReactLoop } from "../core/reactAuditor.js";
 import { runLiveDiagnostics } from "../core/liveDiagnostics.js";
+import { startApiServer } from "../api/server.js";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -29,6 +30,9 @@ program
   .option("--audit-out <path>", "where to write the audit report markdown (default: reports/react-audit-<timestamp>.md)")
   .option("--diagnose-live", "run the 7-point ReAct diagnostic suite against the real configured LLM: iteration stopping, restart-approval, duplicate-action avoidance, tool/skill usage, ground-up deployable app, bug fixing, and full SDLC")
   .option("--diagnose-out <path>", "where to write the live diagnostics report markdown (default: reports/live-diagnostics-<timestamp>.md)")
+  .option("--serve", "start the devnull HTTP API server")
+  .option("--port <number>", "port for the API server (default: 3001)", parseInt)
+  .option("--host <address>", "host for the API server (default: 0.0.0.0)")
   .action(async (opts) => {
     const cwd = process.cwd();
     const telemetry = new FileTelemetry(cwd);
@@ -89,7 +93,13 @@ program
       return;
     }
 
-    const orchestratorOpts: OrchestratorOptions = { cwd };
+    if (opts.serve) {
+      startApiServer({ port: opts.port, host: opts.host });
+      return;
+    }
+
+    const maxIterations = process.env.MAX_ITERATIONS ? parseInt(process.env.MAX_ITERATIONS, 10) : undefined;
+    const orchestratorOpts: OrchestratorOptions = { cwd, maxIterations };
     if (opts.plan === true) orchestratorOpts.planMode = "always";
     if (opts.plan === false) orchestratorOpts.planMode = "never";
 

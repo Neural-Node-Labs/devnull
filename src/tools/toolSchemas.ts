@@ -204,4 +204,26 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "indexing_tool",
+      description:
+        "Rebuild the workspace index (.agent/index/index.json + chunked dump files) by scanning all files while respecting .agentignore/.gitignore/.dockerignore. Use this to get a fresh, authoritative view of the workspace after any file changes, or when you need to navigate files efficiently via the index. Returns the count of indexed files and the generation timestamp.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: {
+            type: "string",
+            description: "'rebuild' to re-index the entire workspace, or 'read' to read a specific file's content from the existing index",
+          },
+          filepath: {
+            type: "string",
+            description: "Required when action='read'. Relative path of the file to read from the index (e.g. 'src/main.ts')",
+          },
+        },
+        required: ["action"],
+      },
+    },
+  },
 ];

@@ -1,0 +1,19 @@
+{
+  "name": "ui-test-suited",
+  "version": "1.0.0",
+  "description": "Back-to-back UI test suite for devnull using Playwright",
+  "private": true,
+  "scripts": {
+    "test": "npx playwright test",
+    "test:headed": "npx playwright test --headed",
+    "test:debug": "npx playwright test --debug",
+    "test:report": "npx playwright test --reporter=html",
+    "show-report": "npx playwright show-report"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@playwright/test": "^1.61.1"
+  }
+}

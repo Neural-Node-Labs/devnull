@@ -1,3 +1,5 @@
-/.idea/
+/.env
 /.agent/
-.env
+/.devx/
+/.idea/
+

@@ -34,9 +34,20 @@ devnull/
 │   ├── config/loadConfig.ts     # loads agent/config/llm.yaml + .env (falls back to DEVNULL_HOME)
 │   └── test/                    # standalone test suites, each runnable via `node dist/test/...`
 ├── Dockerfile                    # multi-stage, non-root runtime, DEVNULL_HOME baked in
-├── docker-compose.yml
+├── docker-compose.yml            # api (port 3001) + ui (port 8080) services
 ├── .dockerignore
-├── solution-design.md
+├── SOLUTION_DESIGN.md
+├── ui.md                         # UI requirements (chat, projects, settings, telemetry, admin, diagnostic)
+├── e2e/                          # Playwright E2E deployment tests
+│   ├── deploy-test.spec.ts
+│   ├── playwright.config.ts
+│   └── package.json
+├── ui-test-suited/               # Comprehensive Playwright UI test suite
+│   ├── health.spec.ts / homepage.spec.ts / chat-flow.spec.ts
+│   ├── project-management.spec.ts / settings.spec.ts
+│   ├── telemetry.spec.ts / admin.spec.ts / diagnostic.spec.ts
+│   ├── playwright.config.ts
+│   └── package.json
 ├── .agent/.agentignore
 ├── .env.example
 ├── package.json
@@ -64,7 +75,7 @@ over the image's fallback.
 producing a working CLI on production-only deps) but not run to completion in the environment
 this was built in, since that sandbox's network egress doesn't reach Docker Hub to pull
 `node:20-alpine`. Run `docker build -t devnull .` yourself to confirm the full image — see
-`solution-design.md` §8 for the full detail on what was and wasn't verified.
+`devnull-core-solution-design.md` §17 for the full detail on what was and wasn't verified.
 
 ## Quick start
 
@@ -376,8 +387,312 @@ Playwright itself, since UI tests belong to the project under test, not to the a
 To run it against real DeepSeek instead of the mock, just use the normal CLI
 (`devnull --task "..."`) once `DEEPSEEK_API_KEY` is set — same dispatch path, live model.
 
+## UI Layer
+
+The UI is defined in `ui.md` and is designed as a React/TypeScript frontend that consumes the
+devnull HTTP API. The `docker-compose.yml` includes a `ui` service that builds from
+`./ui/Dockerfile` and serves on port 8080.
+
+### UI Pages
+
+| Page | Features |
+|---|---|
+| **Chat** | Voice input/listen, file upload to current project workspace, message history |
+| **Project Selection** | Project CRUD (add/update/delete/select active), workspace browser (list/delete/download zip), LLM context toggle per project |
+| **Settings** | User CRUD (add/update/delete), password change, LLM API key management |
+| **Telemetry** | Searchable logs, reason-action-observation display, command execution history, token usage |
+| **Admin** | Admin user created at first login, user management for admin role, admin-only visibility |
+| **Diagnostic** | Testing ReAct loop, testing tools/skills/directives, run test button, pass/fail results |
+
+### Starting the UI
+
+```bash
+# Start both API and UI services
+docker compose --profile serve up -d
+
+# The UI is now available at http://localhost:8080
+# The API is available at http://localhost:3001
+```
+
+## Deployment
+
+### Docker (CLI mode)
+
+```bash
+# Build the image
+docker build -t devnull:latest .
+
+# Run a task
+docker run --rm -it -v "$PWD":/workspace --env-file .env devnull:latest --task "fix the bug"
+
+# Or via docker compose
+docker compose run --rm api --task "fix the bug"
+docker compose run --rm api --chat
+```
+
+### Docker (API + UI mode)
+
+```bash
+# Start both services
+docker compose --profile serve up -d
+
+# View logs
+docker compose logs -f api
+docker compose logs -f ui
+
+# Stop
+docker compose --profile serve down
+```
+
+### Docker Compose Services
+
+The `docker-compose.yml` defines two services under the `serve` profile:
+
+| Service | Image | Port | Description |
+|---|---|---|---|
+| `api` | `devnull-api:latest` | `3001` | Express API server with ReAct orchestrator |
+| `ui` | `devnull-ui:latest` | `8080` | React/TypeScript frontend |
+
+Both services have resource limits, healthchecks, and restart policies configured.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `DEEPSEEK_API_KEY` | (required) | DeepSeek API key for LLM access |
+| `ADMIN_USERNAME` | `admin` | Admin username for login-based auth |
+| `ADMIN_PASSWORD` | (unset) | Admin password for login-based auth. If set, API requires login; if unset, API runs open-access |
+| `DEVNULL_API_PORT` | `3001` | Port the API server listens on |
+| `DEVNULL_API_HOST` | `0.0.0.0` | Host the API server binds to |
+| `DEVNULL_HOME` | `/opt/devnull` | Fallback path for agent skills/config |
+| `NODE_ENV` | `production` | Runtime environment |
+
+## Testing
+
+devnull includes three categories of tests:
+
+### 1. Unit Tests (src/test/)
+
+Standalone test suites, runnable via `node dist/test/test<Subject>.js`:
+
+```bash
+npm run build
+
+# Iteration stopping behavior (5/5 passing)
+node dist/test/testIterationStopping.js /tmp/test-workspace
+
+# Goal validator (3/3 passing)
+node dist/test/testGoalValidator.js /tmp/test-workspace
+
+# ReAct auditor scenario battery
+node dist/test/testReactAuditor.js
+
+# Live diagnostics harness (7/7 passing)
+node dist/test/testLiveDiagnosticsHarness.js
+
+# Live diagnostics negative tests
+node dist/test/testLiveDiagnosticsNegative.js
+
+# Tool loop end-to-end
+mkdir -p /tmp/demo && echo 'function add(a,b){return a+b+1;} console.log(add(2,3));' > /tmp/demo/buggy.js
+node dist/test/testToolLoop.js /tmp/demo
+
+# DeepSeek contract tests (4/4 passing)
+node dist/test/testDeepSeekContract.js
+
+# Live API smoke test (requires DEEPSEEK_API_KEY)
+node dist/test/liveSmokeTest.js
+```
+
+### 2. E2E Deployment Tests (e2e/)
+
+Playwright-based tests that verify the API and UI are running correctly in a Docker deployment:
+
+```bash
+# Start services first
+docker compose --profile serve up -d
+
+# Run E2E tests
+cd e2e
+npm ci
+npx playwright install chromium
+npx playwright test
+cd ..
+```
+
+Tests cover: API health check, skills listing (13 skills), chat endpoint validation,
+telemetry endpoints, 404 handling, UI homepage loading, React mount point, asset loading.
+
+### 3. UI Tests (ui-test-suited/)
+
+Comprehensive Playwright UI test suite covering the full feature surface from `ui.md`:
+
+```bash
+# Start services first
+docker compose --profile serve up -d
+
+# Setup and run
+cd ui-test-suited
+npm install
+npx playwright install chromium
+npm test
+
+# Other run modes
+npm run test:headed      # See the browser
+npm run test:debug       # Playwright debugger
+npm run test:report      # Generate HTML report
+npm run show-report      # View HTML report
+cd ..
+```
+
+**UI Test Specs:**
+
+| Spec File | Coverage |
+|---|---|
+| `health.spec.ts` | API health check, skills listing, error handling (400/404), telemetry endpoints |
+| `homepage.spec.ts` | UI loads, title, root mount point, JS/CSS assets, navigation, console errors |
+| `chat-flow.spec.ts` | Message input, send button, voice/listen, file upload, chat history |
+| `project-management.spec.ts` | Project CRUD, active project selection, workspace browser, download/delete, LLM context toggle |
+| `settings.spec.ts` | User CRUD, password change, LLM key management |
+| `telemetry.spec.ts` | Searchable logs, reason-action-observation, command execution, token usage, log type selector |
+| `admin.spec.ts` | Admin user creation, user management, role editing, user deletion, admin-only visibility |
+| `diagnostic.spec.ts` | React testing, tools/skills/directives testing, run test button, pass/fail results |
+
+## Setup & Execution Guide
+
+### Prerequisites
+
+- **Node.js** 20+ (LTS recommended)
+- **npm** (ships with Node.js)
+- **Docker** (optional, for containerized deployment)
+- **DeepSeek API key** (optional for mock-based testing; required for live LLM usage)
+
+### Local Development
+
+```bash
+# Install dependencies
+npm install
+
+# Configure environment
+cp .env.example .env
+# Edit .env and add your DEEPSEEK_API_KEY
+
+# Build TypeScript
+npm run build
+
+# List all loaded skills
+node dist/cli/index.js --skills
+
+# Index the current workspace
+node dist/cli/index.js --index
+
+# Execute a task
+node dist/cli/index.js --task "design and implement a rate limiter"
+
+# Interactive chat mode
+node dist/cli/index.js --chat
+
+# Record a lesson (self-improvement loop)
+node dist/cli/index.js --lesson "Always check for edge cases in input validation"
+
+# Run ReAct audit
+node dist/cli/index.js --audit-react
+
+# Run live diagnostics (requires real LLM connection)
+node dist/cli/index.js --diagnose-live
+```
+
+### Local Development to use `devnull` as a global CLI command
+
+```bash
+# Install dependencies
+npm install
+
+# Configure environment
+cp .env.example .env
+# Edit .env and add your DEEPSEEK_API_KEY
+
+# Build TypeScript
+npm run build
+
+# optional, to use `devnull` as a global CLI command
+npm link  
+
+# List all loaded skills
+devnull --skills
+
+# Index the current workspace
+devnull --index
+
+# Execute a task
+devnull --task "design and implement a rate limiter"
+
+# Interactive chat mode
+devnull --chat
+
+# Record a lesson (self-improvement loop)
+devnull --lesson "Always check for edge cases in input validation"
+
+# Run ReAct audit
+devnull --audit-react
+
+# Run live diagnostics (requires real LLM connection)
+devnull --diagnose-live
+```
+
+
+### API Server
+
+```bash
+# Start the API server (default port 3001)
+node dist/cli/index.js --serve
+
+# With custom port and host
+node dist/cli/index.js --serve --port 8080 --host 127.0.0.1
+
+# Test the API (first login to get a token)
+TOKEN=$(curl -s -X POST http://localhost:3001/api/v1/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "your-admin-password"}' | node -e "process.stdin.on('data',d=>console.log(JSON.parse(d).data.token))")
+
+# Then use the token for API calls
+curl -H "Authorization: Bearer $TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"task": "list files in the workspace"}' \
+     http://localhost:3001/api/v1/chat
+```
+
+### Full Docker Deployment
+
+```bash
+# 1. Build the image
+docker build -t devnull:latest .
+
+# 2. CLI mode
+docker run --rm -it -v "$PWD":/workspace --env-file .env devnull:latest --task "fix the bug"
+docker compose run --rm api --task "fix the bug"
+docker compose run --rm api --chat
+
+# 3. API + UI mode
+docker compose --profile serve up -d
+
+# 4. Run all tests
+npm run build
+node dist/test/testIterationStopping.js /tmp/test-workspace
+node dist/test/testGoalValidator.js /tmp/test-workspace
+node dist/test/testReactAuditor.js
+node dist/test/testLiveDiagnosticsHarness.js
+node dist/test/testLiveDiagnosticsNegative.js
+node dist/test/testToolLoop.js /tmp/demo
+node dist/test/testDeepSeekContract.js
+
+cd e2e && npx playwright test && cd ..
+cd ui-test-suited && npm test && cd ..
+```
+
 ## Solution design
 
-See [`solution-design.md`](./solution-design.md) for the full architecture: business logic,
-component diagram, sequence diagram, tech-stack rationale, naming conventions, and an honest
-list of known gaps/limitations.
+See [`SOLUTION_DESIGN.md`](SOLUTION_DESIGN.md) for the full architecture: business logic,
+component diagram, sequence diagram, tech-stack rationale, naming conventions, CLI layer, core
+components, tools, LLM client, telemetry, indexing, UI layer, deployment, testing, setup guide,
+and an honest list of known gaps/limitations.

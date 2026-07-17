@@ -14,6 +14,13 @@ export interface OrchestratorOptions {
   validateGoal?: boolean; // independent second-agent audit before accepting completion (default: true)
   maxValidatorRetries?: number; // how many times a rejected claim gets sent back before giving up (default: 2)
   /**
+   * When false, the orchestrator skips all interactive stdin prompts (plan approval, iteration
+   * limit continuation). Plan mode still generates the plan and writes todo.md, but auto-approves
+   * it. Iteration limit auto-continues. Set this for API/CI contexts where no TTY is available.
+   * Defaults to true (interactive prompts enabled).
+   */
+  interactive?: boolean;
+  /**
    * Called when the iteration ceiling is hit and more work is needed. Return true to reset the
    * counter and continue, false to stop. Defaults to an interactive stdin yes/no prompt. Inject
    * this for automated diagnostics/CI where no TTY is available, or to log/audit every restart
@@ -73,7 +80,9 @@ export class ReActOrchestrator {
 
   async run(taskDescription: string, runOpts: RunOptions = {}): Promise<string> {
     const skills = this.selectSkills(taskDescription);
-    const maxIterations = this.opts.maxIterations ?? 10;
+    const maxIterations = this.opts.maxIterations ?? 20;
+
+    console.log(`\n--- Running task: "${taskDescription}" ---\n (maxIterations=${maxIterations}, planMode=${this.opts.planMode ?? "auto"}, validateGoal=${this.opts.validateGoal ?? true})\n`);
 
     if (!runOpts.isSubagent) {
       if (skills.length === 0) {
@@ -121,7 +130,7 @@ export class ReActOrchestrator {
         }
         const shouldContinue = this.opts.onIterationLimitReached
           ? await this.opts.onIterationLimitReached(taskDescription, iteration - 1)
-          : await this.askContinue(taskDescription);
+          : await this.askContinue(taskDescription, maxIterations);
         await this.telemetry.logThought({
           iteration,
           phase: "validation",
@@ -146,6 +155,7 @@ export class ReActOrchestrator {
           const transcript = buildObservationTranscript(messages);
           const verdict = await validateGoal(this.llm, taskDescription, transcript, response.content);
 
+          // console.log(`iteration: ${iteration} thought: ${response.content} \naction: ${transcript} \nobservation:${verdict}` );
           await this.telemetry.logThought({
             iteration,
             phase: "validation",
@@ -255,11 +265,12 @@ export class ReActOrchestrator {
   }
 
   /**
-   * Plan Mode: asks the LLM (no tools, plain completion) for a short numbered plan, writes it
-   * to tasks/todo.md, shows it to the user, and requires explicit confirmation before the
-   * tool-calling loop begins. "Verify Plan: Check in before starting implementation."
+   * Generate a plan for the given task without executing it.
+   * Returns the plan markdown string. Does NOT write to tasks/todo.md or prompt the user.
+   * Used by the API's /chat/plan endpoint so the UI can display the plan for approval.
    */
-  private async runPlanMode(taskDescription: string, skills: LoadedSkill[]): Promise<boolean> {
+  async generatePlan(taskDescription: string): Promise<string> {
+    const skills = this.selectSkills(taskDescription);
     const skillContext = skills.length
       ? `\n\nThe following specialized skills are relevant to this task — let their guidance shape the plan's steps:\n\n${skills
           .map((s) => `## ${s.header.name} (${s.header.role})\n${s.body}`)
@@ -280,8 +291,32 @@ export class ReActOrchestrator {
     ];
 
     const response = await this.llm.complete(planPrompt);
-    const planMarkdown = `# Plan: ${taskDescription}\n\n${response.content.trim()}\n`;
+    return `# Plan: ${taskDescription}\n\n${response.content.trim()}\n`;
+  }
+
+  /**
+   * Plan Mode: asks the LLM (no tools, plain completion) for a short numbered plan, writes it
+   * to tasks/todo.md, shows it to the user, and requires explicit confirmation before the
+   * tool-calling loop begins. "Verify Plan: Check in before starting implementation."
+   *
+   * In non-interactive mode (API context), the plan is still generated and written to todo.md,
+   * but auto-approved without a stdin prompt — the caller (e.g. /chat endpoint) is responsible
+   * for returning the plan to the UI for display and approval via the /chat/plan + /chat/execute
+   * two-phase flow.
+   */
+  private async runPlanMode(taskDescription: string, skills: LoadedSkill[]): Promise<boolean> {
+    const planMarkdown = await this.generatePlan(taskDescription);
     writeTodo(this.cwd, planMarkdown);
+
+    const interactive = this.opts.interactive !== false; // default true
+    if (!interactive) {
+      // API context: auto-approve the plan. The caller (/chat endpoint) will return the plan
+      // in the response so the UI can display it. The UI should use /chat/plan + /chat/execute
+      // for the two-phase approval flow.
+      console.log(`\n--- Plan (tasks/todo.md) ---\n${planMarkdown}`);
+      console.log("(non-interactive mode — plan auto-approved)");
+      return true;
+    }
 
     console.log(`\n--- Plan (tasks/todo.md) ---\n${planMarkdown}`);
     const rl = readline.createInterface({ input, output });
@@ -290,10 +325,16 @@ export class ReActOrchestrator {
     return /^y(es)?$/i.test(answer.trim());
   }
 
-  private async askContinue(taskDescription: string): Promise<boolean> {
+  private async askContinue(taskDescription: string, maxIterations: number): Promise<boolean> {
+    const interactive = this.opts.interactive !== false; // default true
+    if (!interactive) {
+      // API context: auto-continue rather than hanging on stdin
+      console.log(`\nIteration limit reached (${maxIterations}) — non-interactive mode, auto-continuing.`);
+      return true;
+    }
     const rl = readline.createInterface({ input, output });
     const answer = await rl.question(
-      `\nIteration limit reached for: "${taskDescription}".\nContinue for another round? (yes/no) `
+      `\nIteration limit reached for maxIterations [${maxIterations}]: "${taskDescription}".\nContinue for another round? (yes/no) `
     );
     rl.close();
     return /^y(es)?$/i.test(answer.trim());

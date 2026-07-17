@@ -145,7 +145,78 @@ docker run --rm -it -v "$PWD":/workspace --env-file .env devnull:latest --task "
 # or: docker compose run --rm devnull --task "..."
 ```
 
-## 8. Known Gaps / Honest Limitations
+## 8. API Layer (HTTP)
+
+devnull exposes an HTTP API for programmatic access, enabling a future React/TypeScript UI
+(see `ui.md`). The API is served via Express on a configurable port.
+
+### 8.1 Endpoints
+
+| Method | Path | Description | Auth |
+|---|---|---|---|
+| `GET` | `/api/v1/health` | Health check (status, version, uptime) | Bearer token |
+| `POST` | `/api/v1/chat` | Execute a task through the ReAct orchestrator | Bearer token |
+| `GET` | `/api/v1/telemetry` | Retrieve telemetry logs (thinking/llm/sys) | Bearer token |
+| `GET` | `/api/v1/skills` | List all loaded skills with triggers | Bearer token |
+
+### 8.2 Authentication
+
+All endpoints are protected by a Bearer token. The API key is read from the
+`DEVNULL_API_KEY` environment variable. If unset, the API runs **without authentication**
+and logs a warning — this allows local development without configuration.
+
+```
+Authorization: Bearer <DEVNULL_API_KEY>
+```
+
+### 8.3 Configuration
+
+| Env Variable | Default | Description |
+|---|---|---|
+| `DEVNULL_API_KEY` | (unset) | API token for Bearer auth |
+| `DEVNULL_API_PORT` | `3001` | Port the API server listens on |
+| `DEVNULL_API_HOST` | `0.0.0.0` | Host the API server binds to |
+
+### 8.4 Usage
+
+```bash
+# Start the API server
+devnull --serve
+
+# With custom port
+devnull --serve --port 8080
+
+# Via Docker
+docker compose up -d devnull --serve
+
+# Call the API
+curl -H "Authorization: Bearer my-secret-key" \
+     -H "Content-Type: application/json" \
+     -d '{"task": "list files in the workspace"}' \
+     http://localhost:3001/api/v1/chat
+```
+
+### 8.5 Component Architecture (API)
+
+```
+src/api/
+├── types.ts       # API-specific type definitions
+├── auth.ts        # Bearer token authentication middleware
+├── routes.ts      # Express router with all endpoint handlers
+└── server.ts      # Express server bootstrap (start/stop)
+```
+
+The API reuses the same `ReActOrchestrator`, `DeepSeekClient`, and `FileTelemetry` classes
+that the CLI uses — there is no separate execution path. The `POST /api/v1/chat` endpoint
+creates a fresh orchestrator instance per request, runs the task, and returns the result.
+
+### 8.6 Future: React UI
+
+The API is designed to be consumed by a React/TypeScript frontend (see `ui.md`). The
+`/api/v1/chat` endpoint supports the chat interface, `/api/v1/telemetry` powers the
+telemetry viewer, and `/api/v1/skills` provides skill discovery for the UI.
+
+## 9. Known Gaps / Honest Limitations
 
 - **Docker image build was not fully verified end-to-end in the environment this was built
   in** -- that sandbox's network egress doesn't reach Docker Hub, so `FROM node:20-alpine`

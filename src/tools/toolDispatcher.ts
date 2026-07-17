@@ -10,6 +10,7 @@ import { runPlaywrightTest } from "./playwrightTool.js";
 import { crawlAndGeneratePlaywrightTest } from "./crawlPlaywrightTool.js";
 import { githubClone, githubFetch, githubPull, githubStatus, githubCommit, githubPush } from "./githubTool.js";
 import { deployWorkspaceViaSsh } from "./dockerDeploySshTool.js";
+import { rebuildIndex, readIndexedFile } from "./indexingTool.js";
 
 export interface DispatchResult {
   toolCallId: string;
@@ -132,6 +133,28 @@ export async function dispatchToolCall(call: ToolCall, cwd: string = process.cwd
         const result = await deployWorkspaceViaSsh(target, args.remotePath, args.dockerCommand, cwd);
         const isError = result.remoteCommandResult.exitCode !== 0;
         return { toolCallId: call.id, toolName: name, observation: result, isError };
+      }
+      case "indexing_tool": {
+        if (args.action === "rebuild") {
+          const result = await rebuildIndex(cwd);
+          return {
+            toolCallId: call.id,
+            toolName: name,
+            observation: { entriesCount: result.entriesCount, generatedAt: result.generatedAt },
+            isError: false,
+          };
+        } else if (args.action === "read") {
+          if (!args.filepath) {
+            return { toolCallId: call.id, toolName: name, observation: { error: "filepath is required when action='read'" }, isError: true };
+          }
+          const content = readIndexedFile(args.filepath, cwd);
+          if (content === undefined) {
+            return { toolCallId: call.id, toolName: name, observation: { error: `File '${args.filepath}' not found in index. Try rebuilding the index first.` }, isError: true };
+          }
+          return { toolCallId: call.id, toolName: name, observation: { content }, isError: false };
+        } else {
+          return { toolCallId: call.id, toolName: name, observation: { error: `Unknown indexing_tool action: ${args.action}. Use 'rebuild' or 'read'.` }, isError: true };
+        }
       }
       default:
         return { toolCallId: call.id, toolName: name, observation: { error: `Unknown tool: ${name}` }, isError: true };

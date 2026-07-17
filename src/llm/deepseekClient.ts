@@ -90,7 +90,20 @@ export class DeepSeekClient implements LlmClient {
     const { provider, model, api_key_env } = this.config.fallback;
     const apiKey = process.env[api_key_env];
     if (!apiKey) {
-      throw new Error(`Fallback provider ${provider} missing ${api_key_env}; cannot complete request.`);
+      // Surface the actual error first (the primary failure reason), then mention the
+      // fallback as secondary context. Include the request payload for full diagnostics.
+      const payload = {
+        model: this.config.model,
+        max_tokens: this.config.max_tokens,
+        messageCount: messages.length,
+        lastMessageRole: messages[messages.length - 1]?.role,
+        lastMessagePreview: messages[messages.length - 1]?.content?.slice(0, 200),
+      };
+      throw new Error(
+        `Primary LLM call failed: ${reason}. ` +
+        `Fallback provider ${provider} also unavailable (missing ${api_key_env}). ` +
+        `Request payload: ${JSON.stringify(payload)}`
+      );
     }
 
     if (provider === "anthropic") {
