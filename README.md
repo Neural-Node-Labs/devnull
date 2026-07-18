@@ -378,6 +378,6 @@ To run it against real DeepSeek instead of the mock, just use the normal CLI
 
 ## Solution design
 
-See [`solution-design.md`](./solution-design.md) for the full architecture: business logic,
+See [`solution-design.md`](SOLUTION-DESIGN.md) for the full architecture: business logic,
 component diagram, sequence diagram, tech-stack rationale, naming conventions, and an honest
 list of known gaps/limitations.
