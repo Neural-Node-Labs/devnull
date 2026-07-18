@@ -81,3 +81,4 @@ test.describe("Settings", () => {
     await expect(keyInput).toBeVisible();
   });
 });
+

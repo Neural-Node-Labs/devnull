@@ -194,7 +194,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     function: {
       name: "subagent_tool",
       description:
-        "Delegate a focused research/exploration/analysis task to a fresh sub-agent with its own isolated context. Only the sub-agent's final summary comes back — its intermediate tool calls and reasoning never enter your context window. Use this for parallel investigation, large searches, or any sub-task whose detail you don't need to carry forward.",
+        "Delegate a focused research/exploration/analysis task to a fresh sub-agent with its own isolated context. Only the sub-agent's final summary comes back - its intermediate tool calls and reasoning never enter your context window. Use this for parallel investigation, large searches, or any sub-task whose detail you don't need to carry forward.",
       parameters: {
         type: "object",
         properties: {
@@ -223,6 +223,24 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
           },
         },
         required: ["action"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "crawl_site_mapper_tool",
+      description:
+        "Crawl a URL and build a site map of all discoverable internal pages. Uses BFS to traverse same-domain links, records page titles, HTTP status codes, and the link graph. Returns a structured SiteMap with a tree hierarchy.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "Starting URL to crawl" },
+          maxPages: { type: "number", description: "Maximum number of pages to crawl (default: 50)" },
+          maxDepth: { type: "number", description: "Maximum crawl depth (default: 5)" },
+          sameDomain: { type: "boolean", description: "Only crawl same-domain links (default: true)" },
+        },
+        required: ["url"],
       },
     },
   },

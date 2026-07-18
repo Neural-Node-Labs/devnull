@@ -1,11 +1,21 @@
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { LlmClient, LlmMessage, ReActStep, TelemetryInterface, LoadedSkill, Phase } from "./types.js";
+import { LlmClient, LlmMessage, ReActStep, TelemetryInterface, LoadedSkill, Phase, LlmUsage } from "./types.js";
 import { SkillRegistry } from "./skillRegistry.js";
 import { TOOL_SCHEMAS } from "../tools/toolSchemas.js";
 import { dispatchToolCall } from "../tools/toolDispatcher.js";
 import { buildProtocolPrompt, writeTodo, appendTodoReview } from "./protocol.js";
 import { validateGoal, buildObservationTranscript } from "./goalValidator.js";
+import {
+  Spinner,
+  reportThought,
+  reportAction,
+  reportObservation,
+  reportSubagentStart,
+  reportUsage,
+  reportTotalUsage,
+} from "./consoleReporter.js";
+import { compactStaleFileReads } from "./contextCompaction.js";
 
 export interface OrchestratorOptions {
   maxIterations?: number; // "iteration maxout" ceiling per round
@@ -27,6 +37,21 @@ export interface OrchestratorOptions {
    * decision (see src/core/liveDiagnostics.ts diagnostic #2).
    */
   onIterationLimitReached?: (taskDescription: string, iterationsSoFar: number) => Promise<boolean>;
+  /**
+   * Live console reporting: a spinner while waiting on the LLM, plus Thought/Action/Observation
+   * lines printed as each ReAct step happens (in addition to telemetry, which already records
+   * everything — this is purely for a human watching the terminal). Default: true.
+   */
+  consoleThoughts?: boolean;
+  /** Internal — nesting depth used to indent subagent console output. Do not set directly. */
+  consoleIndent?: number;
+  /**
+   * When true, collapses stale/superseded read_tool Observations (earlier full-file snapshots
+   * of a path that's since been re-read or edited) down to a short placeholder instead of
+   * keeping every historical copy in context — see src/core/contextCompaction.ts for exactly
+   * what is and isn't touched, and why. Default: false — existing full-history behavior.
+   */
+  leanToken?: boolean;
 }
 
 export interface RunOptions {
@@ -58,12 +83,44 @@ export class ReActOrchestrator {
   private registry = new SkillRegistry();
   private cwd: string;
 
+  /** Running total for this orchestrator instance, including every LLM call it made directly
+   *  (main loop, goal validation, plan generation) plus everything its subagents used — see
+   *  runSubagent(), which folds each subagent's total into its parent's before returning. */
+  private cumulativeUsage: LlmUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0, reasoningTokens: 0, cachedTokens: 0 };
+  private llmCallCount = 0;
+
   constructor(
     private llm: LlmClient,
     private telemetry: TelemetryInterface,
     private opts: OrchestratorOptions = {}
   ) {
     this.cwd = opts.cwd ?? process.cwd();
+  }
+
+  /** Read-only view of this run's cumulative token usage (includes subagent usage). */
+  getCumulativeUsage(): LlmUsage {
+    return { ...this.cumulativeUsage };
+  }
+
+  private addUsage(usage: LlmUsage | undefined): void {
+    if (!usage) return;
+    this.llmCallCount += 1;
+    this.cumulativeUsage.promptTokens += usage.promptTokens;
+    this.cumulativeUsage.completionTokens += usage.completionTokens;
+    this.cumulativeUsage.totalTokens += usage.totalTokens;
+    this.cumulativeUsage.reasoningTokens = (this.cumulativeUsage.reasoningTokens ?? 0) + (usage.reasoningTokens ?? 0);
+    this.cumulativeUsage.cachedTokens = (this.cumulativeUsage.cachedTokens ?? 0) + (usage.cachedTokens ?? 0);
+  }
+
+  /** Folds a subagent's own cumulative usage (and call count) into this instance's total. */
+  private absorbSubagentUsage(sub: ReActOrchestrator): void {
+    const subUsage = sub.getCumulativeUsage();
+    this.cumulativeUsage.promptTokens += subUsage.promptTokens;
+    this.cumulativeUsage.completionTokens += subUsage.completionTokens;
+    this.cumulativeUsage.totalTokens += subUsage.totalTokens;
+    this.cumulativeUsage.reasoningTokens = (this.cumulativeUsage.reasoningTokens ?? 0) + (subUsage.reasoningTokens ?? 0);
+    this.cumulativeUsage.cachedTokens = (this.cumulativeUsage.cachedTokens ?? 0) + (subUsage.cachedTokens ?? 0);
+    this.llmCallCount += sub.llmCallCount;
   }
 
   /** Route the task to one or more skills (multi-skill composition via composes_with). */
@@ -82,7 +139,9 @@ export class ReActOrchestrator {
     const skills = this.selectSkills(taskDescription);
     const maxIterations = this.opts.maxIterations ?? 20;
 
-    console.log(`\n--- Running task: "${taskDescription}" ---\n (maxIterations=${maxIterations}, planMode=${this.opts.planMode ?? "auto"}, validateGoal=${this.opts.validateGoal ?? true})\n`);
+    const indent = this.opts.consoleIndent ?? 0;
+    const headerPrefix = indent > 0 ? "  ".repeat(indent) : "";
+    console.log(`${headerPrefix}\n--- Running task: "${taskDescription}" ---\n${headerPrefix} (maxIterations=${maxIterations}, planMode=${this.opts.planMode ?? "auto"}, validateGoal=${this.opts.validateGoal ?? true})\n`);
 
     if (!runOpts.isSubagent) {
       if (skills.length === 0) {
@@ -118,6 +177,7 @@ export class ReActOrchestrator {
     let restartCount = 0;
     const maxValidatorRetries = this.opts.maxValidatorRetries ?? 2;
     const validationEnabled = this.opts.validateGoal !== false; // default true
+    const showConsole = this.opts.consoleThoughts !== false; // default true
 
     while (true) {
       iteration += 1;
@@ -146,14 +206,37 @@ export class ReActOrchestrator {
         iteration = 1; // reset iteration count for another round
       }
 
+      const spinner = new Spinner();
+      if (showConsole) spinner.start(indent > 0 ? "Subagent thinking..." : "Thinking...");
       const response = await this.llm.complete(messages, { tools: TOOL_SCHEMAS });
+      if (showConsole) spinner.stop();
+      this.addUsage(response.usage);
+
+      // Show the model's reasoning as soon as it's available. When there ARE tool calls this is
+      // genuinely a mid-task thought (falls back to `content` if the model isn't in thinking mode
+      // and didn't return reasoning_content separately). When there are none, `content` IS the
+      // final answer and gets printed via its own path below — only show reasoningContent here
+      // to avoid printing the same text twice.
+      if (showConsole) {
+        if (response.toolCalls.length > 0) {
+          reportThought(response.reasoningContent ?? response.content, indent);
+        } else if (response.reasoningContent) {
+          reportThought(response.reasoningContent, indent);
+        }
+        reportUsage(response.usage, this.cumulativeUsage.totalTokens, indent);
+      }
 
       if (response.toolCalls.length === 0) {
         // Candidate completion. Before accepting it, run it past an independent validator
         // (devnull.md "Verification Before Done") unless validation is disabled or exhausted.
         if (validationEnabled && validatorRejections < maxValidatorRetries) {
           const transcript = buildObservationTranscript(messages);
+          const vSpinner = new Spinner();
+          if (showConsole && !runOpts.isSubagent) vSpinner.start("Validating completion...");
           const verdict = await validateGoal(this.llm, taskDescription, transcript, response.content);
+          if (showConsole && !runOpts.isSubagent) vSpinner.stop();
+          this.addUsage(verdict.usage);
+          if (showConsole && !runOpts.isSubagent) reportUsage(verdict.usage, this.cumulativeUsage.totalTokens, indent);
 
           // console.log(`iteration: ${iteration} thought: ${response.content} \naction: ${transcript} \nobservation:${verdict}` );
           await this.telemetry.logThought({
@@ -203,7 +286,15 @@ export class ReActOrchestrator {
 
       for (const call of response.toolCalls) {
         if (call.function.name === "subagent_tool") {
+          const parsedArgs = safeParse(call.function.arguments);
+          const subTaskLabel =
+            parsedArgs && typeof parsedArgs === "object" && "task" in (parsedArgs as Record<string, unknown>)
+              ? String((parsedArgs as Record<string, unknown>).task)
+              : call.function.arguments;
+          if (showConsole) reportSubagentStart(subTaskLabel, indent);
+
           const observation = await this.runSubagent(call.function.arguments);
+          if (showConsole) reportObservation(observation, false, indent);
           await this.telemetry.logThought({
             iteration,
             phase: "search",
@@ -223,8 +314,10 @@ export class ReActOrchestrator {
           action: { tool: call.function.name, input: safeParse(call.function.arguments) },
         };
 
+        if (showConsole) reportAction(step.action!.tool, step.action!.input, indent);
         const result = await dispatchToolCall(call, this.cwd);
         step.observation = result.observation;
+        if (showConsole) reportObservation(result.observation, result.isError, indent);
         await this.telemetry.logThought(step);
 
         if (result.isError) {
@@ -237,12 +330,25 @@ export class ReActOrchestrator {
           name: result.toolName,
           content: JSON.stringify(result.observation),
         });
+
+        // Lean token mode: a fresh read_tool or write_edit_tool observation for a path makes
+        // any earlier read_tool observation of that same path stale — collapse it. Only runs
+        // when explicitly opted in; see contextCompaction.ts for exactly what this does.
+        if (this.opts.leanToken && (result.toolName === "read_tool" || result.toolName === "write_edit_tool")) {
+          const args = step.action?.input as { filePath?: string } | undefined;
+          if (args?.filePath) {
+            compactStaleFileReads(messages, args.filePath, result.toolCallId);
+          }
+        }
       }
       // Loop continues: the new Observations go back in as context for the next Thought.
     }
 
     if (shouldPlan && !runOpts.isSubagent) {
       appendTodoReview(this.cwd, finalContent);
+    }
+    if (showConsole && !runOpts.isSubagent) {
+      reportTotalUsage(this.cumulativeUsage, this.llmCallCount, indent);
     }
     return finalContent;
   }
@@ -259,8 +365,13 @@ export class ReActOrchestrator {
     } catch {
       return { summary: "subagent_tool error: invalid arguments" };
     }
-    const sub = new ReActOrchestrator(this.llm, this.telemetry, { ...this.opts, cwd: this.cwd });
+    const sub = new ReActOrchestrator(this.llm, this.telemetry, {
+      ...this.opts,
+      cwd: this.cwd,
+      consoleIndent: (this.opts.consoleIndent ?? 0) + 1,
+    });
     const result = await sub.run(task, { skipPlanMode: true, isSubagent: true });
+    this.absorbSubagentUsage(sub);
     return { summary: result };
   }
 
@@ -290,7 +401,17 @@ export class ReActOrchestrator {
       { role: "user", content: taskDescription },
     ];
 
-    const response = await this.llm.complete(planPrompt);
+    const response = await (async () => {
+      const spinner = new Spinner();
+      if (this.opts.consoleThoughts !== false) spinner.start("Drafting plan...");
+      const res = await this.llm.complete(planPrompt);
+      if (this.opts.consoleThoughts !== false) spinner.stop();
+      return res;
+    })();
+    this.addUsage(response.usage);
+    if (this.opts.consoleThoughts !== false) {
+      reportUsage(response.usage, this.cumulativeUsage.totalTokens, this.opts.consoleIndent ?? 0);
+    }
     return `# Plan: ${taskDescription}\n\n${response.content.trim()}\n`;
   }
 
@@ -393,3 +514,4 @@ function buildSystemPrompt(skills: LoadedSkill[], cwd: string): string {
 
   return `${protocol}<task_context>\n${base}${skillBlocks}\n</task_context>`;
 }
+

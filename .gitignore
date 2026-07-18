@@ -3,3 +3,6 @@
 /.devx/
 /.idea/
 
+/workspace/
+/dist/
+/node_modules/

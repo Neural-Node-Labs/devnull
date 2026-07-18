@@ -14,6 +14,8 @@ export interface ChatRequest {
   task: string;
   /** Optional: force plan mode on/off for this request. */
   planMode?: "auto" | "always" | "never";
+  /** Optional: collapse stale/superseded file-read snapshots in context. Default: false. */
+  leanToken?: boolean;
 }
 
 /** POST /api/v1/chat response data. */
@@ -31,6 +33,7 @@ export interface ChatResponse {
 export interface PlanRequest {
   task: string;
   planMode?: "auto" | "always" | "never";
+  leanToken?: boolean;
 }
 
 /** POST /api/v1/chat/plan response data. */
@@ -115,3 +118,4 @@ export interface LoginResponse {
   username: string;
   role: "admin" | "user";
 }
+

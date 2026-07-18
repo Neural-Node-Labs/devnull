@@ -46,3 +46,4 @@ test.describe("UI Homepage", () => {
     expect(consoleErrors.length).toBe(0);
   });
 });
+

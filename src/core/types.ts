@@ -59,10 +59,19 @@ export interface ToolCall {
   function: { name: string; arguments: string }; // arguments is a JSON string
 }
 
+export interface LlmUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  reasoningTokens?: number; // thinking-mode CoT tokens, subset of completionTokens
+  cachedTokens?: number; // prompt tokens served from DeepSeek's context cache (cheaper)
+}
+
 export interface LlmResponse {
   content: string;
   toolCalls: ToolCall[];
   reasoningContent?: string; // present in thinking mode; must be carried into the next assistant message
+  usage?: LlmUsage;
 }
 
 export interface LlmClient {
@@ -85,3 +94,4 @@ export interface IndexFile {
   generatedAt: string;
   entries: IndexEntry[];
 }
+

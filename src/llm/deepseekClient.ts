@@ -67,6 +67,13 @@ export class DeepSeekClient implements LlmClient {
         choices: {
           message: { content: string | null; tool_calls?: LlmResponse["toolCalls"]; reasoning_content?: string };
         }[];
+        usage?: {
+          prompt_tokens: number;
+          completion_tokens: number;
+          total_tokens: number;
+          prompt_cache_hit_tokens?: number;
+          completion_tokens_details?: { reasoning_tokens?: number };
+        };
       };
       const message = data.choices?.[0]?.message;
       await this.telemetry?.logLlmCall(body, data);
@@ -74,6 +81,15 @@ export class DeepSeekClient implements LlmClient {
         content: message?.content ?? "",
         toolCalls: message?.tool_calls ?? [],
         reasoningContent: message?.reasoning_content,
+        usage: data.usage
+          ? {
+              promptTokens: data.usage.prompt_tokens,
+              completionTokens: data.usage.completion_tokens,
+              totalTokens: data.usage.total_tokens,
+              reasoningTokens: data.usage.completion_tokens_details?.reasoning_tokens,
+              cachedTokens: data.usage.prompt_cache_hit_tokens,
+            }
+          : undefined,
       };
     } catch (err) {
       await this.telemetry?.logError(err, "DeepSeekClient");
@@ -123,9 +139,22 @@ export class DeepSeekClient implements LlmClient {
           system: messages.find((m) => m.role === "system")?.content,
         }),
       });
-      const data = (await res.json()) as { content: { type: string; text?: string }[] };
+      const data = (await res.json()) as {
+        content: { type: string; text?: string }[];
+        usage?: { input_tokens: number; output_tokens: number };
+      };
       const text = data.content?.find((c) => c.type === "text")?.text ?? "";
-      return { content: text, toolCalls: [] };
+      return {
+        content: text,
+        toolCalls: [],
+        usage: data.usage
+          ? {
+              promptTokens: data.usage.input_tokens,
+              completionTokens: data.usage.output_tokens,
+              totalTokens: data.usage.input_tokens + data.usage.output_tokens,
+            }
+          : undefined,
+      };
     }
 
     throw new Error(`Unsupported fallback provider: ${provider}`);
@@ -135,3 +164,4 @@ export class DeepSeekClient implements LlmClient {
 function stripUndefined(message: LlmMessage): LlmMessage {
   return Object.fromEntries(Object.entries(message).filter(([, v]) => v !== undefined)) as LlmMessage;
 }
+

@@ -11,6 +11,7 @@ import { crawlAndGeneratePlaywrightTest } from "./crawlPlaywrightTool.js";
 import { githubClone, githubFetch, githubPull, githubStatus, githubCommit, githubPush } from "./githubTool.js";
 import { deployWorkspaceViaSsh } from "./dockerDeploySshTool.js";
 import { rebuildIndex, readIndexedFile } from "./indexingTool.js";
+import { crawlSiteMap, formatSiteMap } from "./siteCrawlerTool.js";
 
 export interface DispatchResult {
   toolCallId: string;
@@ -155,6 +156,20 @@ export async function dispatchToolCall(call: ToolCall, cwd: string = process.cwd
         } else {
           return { toolCallId: call.id, toolName: name, observation: { error: `Unknown indexing_tool action: ${args.action}. Use 'rebuild' or 'read'.` }, isError: true };
         }
+      }
+      case "crawl_site_mapper_tool": {
+        const result = await crawlSiteMap(args.url, {
+          maxPages: args.maxPages ?? 50,
+          maxDepth: args.maxDepth ?? 5,
+          sameDomain: args.sameDomain ?? true,
+        });
+        const formatted = formatSiteMap(result);
+        return {
+          toolCallId: call.id,
+          toolName: name,
+          observation: { siteMap: result, formatted },
+          isError: false,
+        };
       }
       default:
         return { toolCallId: call.id, toolName: name, observation: { error: `Unknown tool: ${name}` }, isError: true };

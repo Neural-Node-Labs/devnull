@@ -65,3 +65,4 @@ test.describe("Telemetry", () => {
     await expect(refreshButton).toBeVisible();
   });
 });
+

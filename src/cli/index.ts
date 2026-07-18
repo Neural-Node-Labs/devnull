@@ -26,6 +26,7 @@ program
   .option("--lesson <text>", "record a lesson to tasks/lessons.md (see devnull.md Self-Improvement Loop)")
   .option("--plan", "force Plan Mode on, regardless of task complexity heuristic")
   .option("--no-plan", "force Plan Mode off, regardless of task complexity heuristic")
+  .option("--lean-token", "collapse stale/superseded read_tool file snapshots in context instead of keeping every historical copy (see src/core/contextCompaction.ts); default: off, full history is kept")
   .option("--audit-react", "run the built-in bug-fixing scenario battery through the real orchestrator and report on how it performed")
   .option("--audit-out <path>", "where to write the audit report markdown (default: reports/react-audit-<timestamp>.md)")
   .option("--diagnose-live", "run the 7-point ReAct diagnostic suite against the real configured LLM: iteration stopping, restart-approval, duplicate-action avoidance, tool/skill usage, ground-up deployable app, bug fixing, and full SDLC")
@@ -102,6 +103,7 @@ program
     const orchestratorOpts: OrchestratorOptions = { cwd, maxIterations };
     if (opts.plan === true) orchestratorOpts.planMode = "always";
     if (opts.plan === false) orchestratorOpts.planMode = "never";
+    if (opts.leanToken) orchestratorOpts.leanToken = true;
 
     const llm = new DeepSeekClient(llmConfig, telemetry);
     const orchestrator = new ReActOrchestrator(llm, telemetry, orchestratorOpts);
@@ -135,3 +137,4 @@ async function chatLoop(orchestrator: ReActOrchestrator): Promise<void> {
 }
 
 program.parseAsync(process.argv);
+

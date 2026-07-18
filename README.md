@@ -696,3 +696,4 @@ See [`SOLUTION_DESIGN.md`](SOLUTION_DESIGN.md) for the full architecture: busine
 component diagram, sequence diagram, tech-stack rationale, naming conventions, CLI layer, core
 components, tools, LLM client, telemetry, indexing, UI layer, deployment, testing, setup guide,
 and an honest list of known gaps/limitations.
+

@@ -310,3 +310,4 @@ export function applyTheme(theme: Theme): void {
   root.style.setProperty("--color-nav-bg", c.navBg);
 }
 
+

@@ -155,3 +155,4 @@ jobs:
 | `locator not found` | UI element selector mismatch | Check the actual DOM; update locator |
 | Tests pass locally but fail in CI | Timing issue | Add `expect().toBeVisible()` waits instead of `waitForTimeout` |
 | `Browser not installed` | Missing Playwright browsers | `npx playwright install chromium` |
+

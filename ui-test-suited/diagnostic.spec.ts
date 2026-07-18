@@ -62,3 +62,4 @@ test.describe("Diagnostic", () => {
     await expect(summary).toBeVisible();
   });
 });
+

@@ -95,3 +95,4 @@ WORKDIR /workspace
 
 ENTRYPOINT ["node", "/opt/devnull/dist/cli/index.js"]
 CMD ["--help"]
+

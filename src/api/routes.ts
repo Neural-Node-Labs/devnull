@@ -103,7 +103,7 @@ export function createRouter(): Router {
 
   // ─── Chat / Task Execution ─────────────────────────────────────────────
   router.post("/chat", async (req: Request, res: Response) => {
-    const { task, planMode } = req.body as ChatRequest;
+    const { task, planMode, leanToken } = req.body as ChatRequest;
 
     if (!task || typeof task !== "string" || task.trim().length === 0) {
       const body: ApiResponse = { success: false, error: "Missing or empty 'task' field" };
@@ -120,6 +120,7 @@ export function createRouter(): Router {
     // Plan mode will auto-approve and the plan will be returned in the response.
     const opts: OrchestratorOptions = { cwd, interactive: false };
     if (planMode) opts.planMode = planMode;
+    if (leanToken) opts.leanToken = true;
 
     const orchestrator = new ReActOrchestrator(llm, telemetry, opts);
 
@@ -141,6 +142,7 @@ export function createRouter(): Router {
           task: task.trim(),
           plan,
           planMode: planMode ?? "always",
+          leanToken: leanToken ?? false,
           createdAt: Date.now(),
         });
       }
@@ -166,13 +168,14 @@ export function createRouter(): Router {
     task: string;
     plan: string;
     planMode: "auto" | "always" | "never";
+    leanToken: boolean;
     createdAt: number;
   }
   const planSessions = new Map<string, PlanSession>();
 
   // ─── Plan Generation (no execution) ────────────────────────────────────
   router.post("/chat/plan", async (req: Request, res: Response) => {
-    const { task, planMode } = req.body as PlanRequest;
+    const { task, planMode, leanToken } = req.body as PlanRequest;
 
     if (!task || typeof task !== "string" || task.trim().length === 0) {
       const body: ApiResponse = { success: false, error: "Missing or empty 'task' field" };
@@ -186,6 +189,7 @@ export function createRouter(): Router {
     const llm = new DeepSeekClient(llmConfig, telemetry);
 
     const opts: OrchestratorOptions = { cwd, planMode: planMode ?? "always" };
+    if (leanToken) opts.leanToken = true;
     const orchestrator = new ReActOrchestrator(llm, telemetry, opts);
 
     try {
@@ -195,6 +199,7 @@ export function createRouter(): Router {
         task: task.trim(),
         plan,
         planMode: planMode ?? "always",
+        leanToken: leanToken ?? false,
         createdAt: Date.now(),
       });
 
@@ -235,6 +240,7 @@ export function createRouter(): Router {
     const llm = new DeepSeekClient(llmConfig, telemetry);
 
     const opts: OrchestratorOptions = { cwd, planMode: "never" }; // Plan already done
+    if (session.leanToken) opts.leanToken = true;
     const orchestrator = new ReActOrchestrator(llm, telemetry, opts);
 
     try {
@@ -428,3 +434,4 @@ export function createRouter(): Router {
 
   return router;
 }
+
