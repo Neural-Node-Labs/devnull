@@ -9,6 +9,7 @@ import { sshExec, scpUpload, scpDownload, SshTarget } from "./sshTool.js";
 import { scheduleCron, scheduleOnce, listScheduled, removeScheduled } from "./scheduleTool.js";
 import { runPlaywrightTest } from "./playwrightTool.js";
 import { crawlAndGeneratePlaywrightTest } from "./crawlPlaywrightTool.js";
+import { summarizeUrl } from "./summarizeUrlTool.js";
 import { githubClone, githubFetch, githubPull, githubStatus, githubCommit, githubPush } from "./githubTool.js";
 import { deployWorkspaceViaSsh } from "./dockerDeploySshTool.js";
 import { rebuildIndex, readIndexedFile } from "./indexingTool.js";
@@ -271,6 +272,10 @@ export async function dispatchToolCall(call: ToolCall, cwd: string = process.cwd
         } finally {
           await planStore.close();
         }
+      }
+      case "summarize_url_tool": {
+        const result = await summarizeUrl(args.url);
+        return { toolCallId: call.id, toolName: name, observation: result, isError: false };
       }
       default:
         return { toolCallId: call.id, toolName: name, observation: { error: `Unknown tool: ${name}` }, isError: true };

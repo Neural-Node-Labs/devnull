@@ -25,16 +25,11 @@ export function PlansPage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/v1/plans", {
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem("devnull_auth_token")}`,
-        },
-      });
-      const json = await res.json();
-      if (json.success && json.data) {
-        setPlans(json.data.plans ?? []);
+      const res = await api.listPlans();
+      if (res.success && res.data) {
+        setPlans(res.data.plans ?? []);
       } else {
-        setError(json.error ?? "Failed to load plans");
+        setError(res.error ?? "Failed to load plans");
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");

@@ -324,4 +324,19 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "summarize_url_tool",
+      description:
+        "Fetch a URL, extract its readable content (title, headings, paragraphs), and return a structured summary. Use this to quickly understand what a web page is about without reading the entire page.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "The URL to fetch and summarize" },
+        },
+        required: ["url"],
+      },
+    },
+  },
 ];

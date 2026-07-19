@@ -52,6 +52,10 @@ export class PlanStore {
 
   async init(): Promise<void> {
     if (this.initialized) return;
+    if (!process.env.DATABASE_URL) {
+      console.warn("[PlanStore] DATABASE_URL not set — plans will not be persisted. Set DATABASE_URL to enable plan storage.");
+      return;
+    }
     try {
       const client = await this.pool.connect();
       try {
@@ -92,6 +96,12 @@ export class PlanStore {
    */
   async savePlan(taskDescription: string, planContent: string, tasks: string[]): Promise<Plan> {
     await this.init();
+    if (!this.initialized) {
+      throw new Error(
+        "PlanStore is not initialized — DATABASE_URL is not set or PostgreSQL is unreachable. " +
+        "Set the DATABASE_URL environment variable to a running PostgreSQL instance to enable plan storage."
+      );
+    }
     const id = `plan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const now = new Date().toISOString();
 
@@ -135,6 +145,10 @@ export class PlanStore {
    */
   async getPlan(id: string): Promise<{ plan: Plan | null; tasks: PlanTask[] }> {
     await this.init();
+    if (!this.initialized) {
+      console.warn("[PlanStore] Not initialized — returning null plan. Set DATABASE_URL to enable plan storage.");
+      return { plan: null, tasks: [] };
+    }
     try {
       const planResult = await this.pool.query(
         `SELECT id, task_description as "taskDescription", plan_content as "planContent",
@@ -164,6 +178,10 @@ export class PlanStore {
    */
   async listPlans(limit = 20): Promise<Plan[]> {
     await this.init();
+    if (!this.initialized) {
+      console.warn("[PlanStore] Not initialized — returning empty plan list. Set DATABASE_URL to enable plan storage.");
+      return [];
+    }
     try {
       const result = await this.pool.query(
         `SELECT id, task_description as "taskDescription", plan_content as "planContent",

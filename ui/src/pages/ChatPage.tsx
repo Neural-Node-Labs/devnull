@@ -72,6 +72,11 @@ export function ChatPage() {
           setCurrentPlan(data.plan);
           setSessionId(data.sessionId ?? null);
           setMessages((prev) => [...prev, { role: "system", content: `📋 Plan generated:\n${data.plan}`, timestamp: new Date() }]);
+
+          // Persist the plan to the database so it shows up on the Plans page
+          api.savePlan(userMessage.content, data.plan, []).catch((err) => {
+            console.warn("Failed to auto-save plan:", err);
+          });
         }
 
         if (data.result) {

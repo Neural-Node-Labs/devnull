@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
+import { api } from "../api/client";
 import { JsonViewer } from "../components/JsonViewer";
 
 interface Plan {
@@ -49,17 +50,12 @@ export function PlanDetailPage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/v1/plans/${planId}`, {
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem("devnull_auth_token")}`,
-        },
-      });
-      const json = await res.json();
-      if (json.success && json.data) {
-        setPlan(json.data.plan ?? null);
-        setTasks(json.data.tasks ?? []);
+      const res = await api.getPlan(planId);
+      if (res.success && res.data) {
+        setPlan(res.data.plan ?? null);
+        setTasks(res.data.tasks ?? []);
       } else {
-        setError(json.error ?? "Failed to load plan");
+        setError(res.error ?? "Failed to load plan");
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
@@ -70,16 +66,8 @@ export function PlanDetailPage() {
 
   const updateTaskStatus = async (taskId: string, status: string) => {
     try {
-      const res = await fetch(`/api/v1/plans/${id}/tasks/${taskId}`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${localStorage.getItem("devnull_auth_token")}`,
-        },
-        body: JSON.stringify({ status }),
-      });
-      const json = await res.json();
-      if (json.success) {
+      const res = await api.updateTaskStatus(id!, taskId, status);
+      if (res.success) {
         setTasks((prev) =>
           prev.map((t) => (t.id === taskId ? { ...t, status: status as any, updatedAt: new Date().toISOString() } : t))
         );
@@ -93,17 +81,10 @@ export function PlanDetailPage() {
     if (!newTaskDesc.trim()) return;
     setAddingTask(true);
     try {
-      const res = await fetch(`/api/v1/plans/${id}/tasks`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${localStorage.getItem("devnull_auth_token")}`,
-        },
-        body: JSON.stringify({ description: newTaskDesc.trim() }),
-      });
-      const json = await res.json();
-      if (json.success && json.data?.task) {
-        setTasks((prev) => [...prev, json.data.task]);
+      const res = await api.addPlanTask(id!, newTaskDesc.trim());
+      if (res.success && res.data?.task) {
+        const task = res.data.task;
+        setTasks((prev) => [...prev, task]);
         setNewTaskDesc("");
       }
     } catch (err) {
@@ -115,14 +96,8 @@ export function PlanDetailPage() {
 
   const deleteTask = async (taskId: string) => {
     try {
-      const res = await fetch(`/api/v1/plans/${id}/tasks/${taskId}`, {
-        method: "DELETE",
-        headers: {
-          Authorization: `Bearer ${localStorage.getItem("devnull_auth_token")}`,
-        },
-      });
-      const json = await res.json();
-      if (json.success) {
+      const res = await api.deletePlanTask(id!, taskId);
+      if (res.success) {
         setTasks((prev) => prev.filter((t) => t.id !== taskId));
       }
     } catch (err) {
@@ -132,16 +107,8 @@ export function PlanDetailPage() {
 
   const updatePlanStatus = async (status: "active" | "completed" | "cancelled") => {
     try {
-      const res = await fetch(`/api/v1/plans/${id}/status`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${localStorage.getItem("devnull_auth_token")}`,
-        },
-        body: JSON.stringify({ status }),
-      });
-      const json = await res.json();
-      if (json.success && plan) {
+      const res = await api.updatePlanStatus(id!, status);
+      if (res.success && plan) {
         setPlan({ ...plan, status, updatedAt: new Date().toISOString() });
       }
     } catch (err) {
