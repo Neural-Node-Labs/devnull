@@ -1,6 +1,18 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { api, Project, WorkspaceFile } from "../api/client";
 
+/** Mirrors the server's slugify() in src/api/projectStore.ts, purely so the form can preview
+ *  the folder name before the project is actually created. The server is the source of truth
+ *  (and handles de-duplication with a -2/-3 suffix) — this is just a friendly hint. */
+function previewSlug(name: string): string {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "project";
+}
+
 export default function ProjectsPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
@@ -15,10 +27,10 @@ export default function ProjectsPage() {
   const [showAddForm, setShowAddForm] = useState(false);
   const [editProject, setEditProject] = useState<Project | null>(null);
   const [formName, setFormName] = useState("");
-  const [formPath, setFormPath] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
   const [formBusy, setFormBusy] = useState(false);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const showMessage = (type: "success" | "error", text: string) => {
@@ -77,21 +89,20 @@ export default function ProjectsPage() {
     setShowAddForm(false);
     setEditProject(null);
     setFormName("");
-    setFormPath("");
     setFormError(null);
   };
 
   const handleAdd = async () => {
     setFormError(null);
-    if (!formName.trim() || !formPath.trim()) {
-      setFormError("Name and path are both required.");
+    if (!formName.trim()) {
+      setFormError("Project name is required.");
       return;
     }
     setFormBusy(true);
     try {
-      const res = await api.addProject(formName.trim(), formPath.trim());
+      const res = await api.addProject(formName.trim());
       if (res.success && res.data) {
-        showMessage("success", res.created ? `Project "${res.data.name}" added — created a new folder at ${res.data.path}` : `Project "${res.data.name}" added`);
+        showMessage("success", `Project "${res.data.name}" created at ${res.data.path}`);
         closeForm();
         loadProjects();
         setSelectedProjectId(res.data.id);
@@ -109,15 +120,15 @@ export default function ProjectsPage() {
   const handleUpdate = async () => {
     if (!editProject) return;
     setFormError(null);
-    if (!formName.trim() || !formPath.trim()) {
-      setFormError("Name and path are both required.");
+    if (!formName.trim()) {
+      setFormError("Project name is required.");
       return;
     }
     setFormBusy(true);
     try {
-      const res = await api.updateProject(editProject.id, { name: formName.trim(), path: formPath.trim() });
+      const res = await api.updateProject(editProject.id, { name: formName.trim() });
       if (res.success) {
-        showMessage("success", "Project updated");
+        showMessage("success", "Project renamed");
         closeForm();
         loadProjects();
       } else {
@@ -179,7 +190,6 @@ export default function ProjectsPage() {
     setShowAddForm(false);
     setEditProject(p);
     setFormName(p.name);
-    setFormPath(p.path);
     setFormError(null);
   };
 
@@ -190,6 +200,16 @@ export default function ProjectsPage() {
       if (!result.success) showMessage("error", result.error ?? "Download failed");
     } finally {
       setDownloadingId(null);
+    }
+  };
+
+  const handleCopyPath = async (project: Project) => {
+    try {
+      await navigator.clipboard.writeText(project.path);
+      setCopiedId(project.id);
+      setTimeout(() => setCopiedId(null), 1500);
+    } catch {
+      showMessage("error", "Couldn't copy — your browser may be blocking clipboard access");
     }
   };
 
@@ -230,6 +250,7 @@ export default function ProjectsPage() {
     fontSize: "14px",
     outline: "none",
     boxSizing: "border-box",
+    transition: "border-color 0.15s ease",
   };
 
   const btnStyle = (variant: "primary" | "danger" | "ghost" = "primary"): React.CSSProperties => ({
@@ -243,7 +264,23 @@ export default function ProjectsPage() {
     fontWeight: 600,
     cursor: "pointer",
     transition: "all 0.15s ease",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "6px",
   });
+
+  const previewBoxStyle: React.CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    padding: "10px 12px",
+    borderRadius: "6px",
+    background: "color-mix(in srgb, var(--color-primary) 8%, transparent)",
+    border: "1px dashed color-mix(in srgb, var(--color-primary) 40%, transparent)",
+    fontSize: "12px",
+    fontFamily: "monospace",
+    color: "var(--color-text-secondary)",
+  };
 
   if (loading) {
     return (
@@ -255,7 +292,7 @@ export default function ProjectsPage() {
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "24px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "8px", flexWrap: "wrap", gap: "12px" }}>
         <div>
           <h1 style={{ fontSize: "24px", fontWeight: 700, marginBottom: "4px" }}>Projects</h1>
           <p style={{ color: "var(--color-text-secondary)", fontSize: "14px", margin: 0 }}>
@@ -266,15 +303,19 @@ export default function ProjectsPage() {
           onClick={() => {
             setEditProject(null);
             setFormName("");
-            setFormPath("");
             setFormError(null);
             setShowAddForm(true);
           }}
           style={btnStyle("primary")}
         >
-          + Add project
+          <span aria-hidden="true">＋</span> New project
         </button>
       </div>
+
+      <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: "0 0 24px", display: "flex", alignItems: "center", gap: "6px" }}>
+        <span aria-hidden="true">📁</span>
+        Every project gets its own folder under <code style={{ fontFamily: "monospace" }}>./workspace</code> — devnull creates and manages it for you, so there's nothing to configure.
+      </p>
 
       {loadError && (
         <div style={{ ...sectionStyle, borderColor: "var(--color-error)", color: "var(--color-error)", fontSize: "13px" }}>
@@ -308,25 +349,45 @@ export default function ProjectsPage() {
       {(showAddForm || editProject) && (
         <div style={{ ...sectionStyle, borderColor: "var(--color-primary)" }}>
           <h2 style={{ fontSize: "16px", fontWeight: 600, marginBottom: "16px" }}>
-            {editProject ? "Edit project" : "New project"}
+            {editProject ? "Rename project" : "New project"}
           </h2>
           <div style={{ display: "flex", flexDirection: "column", gap: "12px", maxWidth: "480px" }}>
             <div>
               <label htmlFor="proj-name" style={{ display: "block", marginBottom: "6px", fontSize: "13px", color: "var(--color-text-secondary)" }}>
                 Project name
               </label>
-              <input id="proj-name" type="text" value={formName} onChange={(e) => setFormName(e.target.value)} placeholder="e.g. devnull" style={inputStyle} autoFocus />
+              <input
+                id="proj-name"
+                type="text"
+                value={formName}
+                onChange={(e) => setFormName(e.target.value)}
+                placeholder="e.g. My Cool App"
+                style={inputStyle}
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") (editProject ? handleUpdate : handleAdd)();
+                }}
+              />
             </div>
-            <div>
-              <label htmlFor="proj-path" style={{ display: "block", marginBottom: "6px", fontSize: "13px", color: "var(--color-text-secondary)" }}>
-                Workspace path (created automatically if it doesn't exist yet)
-              </label>
-              <input id="proj-path" type="text" value={formPath} onChange={(e) => setFormPath(e.target.value)} placeholder="/home/user/projects/my-app" style={{ ...inputStyle, fontFamily: "monospace" }} />
-            </div>
+
+            {!editProject && (
+              <div style={previewBoxStyle}>
+                <span aria-hidden="true">📁</span>
+                <span>
+                  ./workspace/<strong>{previewSlug(formName) || "…"}</strong>
+                </span>
+              </div>
+            )}
+            {editProject && (
+              <p style={{ fontSize: "12px", color: "var(--color-text-secondary)", margin: 0 }}>
+                Renaming only changes the display name — the workspace folder on disk stays put.
+              </p>
+            )}
+
             {formError && <p style={{ color: "var(--color-error)", fontSize: "13px", margin: 0 }}>{formError}</p>}
             <div style={{ display: "flex", gap: "8px" }}>
               <button onClick={editProject ? handleUpdate : handleAdd} disabled={formBusy} style={{ ...btnStyle("primary"), opacity: formBusy ? 0.6 : 1 }}>
-                {formBusy ? "Saving…" : editProject ? "Save changes" : "Add project"}
+                {formBusy ? "Saving…" : editProject ? "Save changes" : "Create project"}
               </button>
               <button onClick={closeForm} style={btnStyle("ghost")}>
                 Cancel
@@ -337,12 +398,14 @@ export default function ProjectsPage() {
       )}
 
       {projects.length === 0 && !loadError ? (
-        <div style={{ ...sectionStyle, textAlign: "center", padding: "48px 24px" }}>
-          <p style={{ color: "var(--color-text-secondary)", fontSize: "14px", marginBottom: "16px" }}>
-            No projects yet. Add one to give devnull a workspace to operate in.
+        <div style={{ ...sectionStyle, textAlign: "center", padding: "56px 24px" }}>
+          <div style={{ fontSize: "32px", marginBottom: "12px" }} aria-hidden="true">📁</div>
+          <p style={{ fontSize: "15px", fontWeight: 600, marginBottom: "4px" }}>No projects yet</p>
+          <p style={{ color: "var(--color-text-secondary)", fontSize: "14px", marginBottom: "20px" }}>
+            Give it a name — devnull creates the workspace folder for you under <code style={{ fontFamily: "monospace" }}>./workspace</code>.
           </p>
           <button onClick={() => setShowAddForm(true)} style={{ ...btnStyle("primary"), margin: "0 auto" }}>
-            + Add project
+            <span aria-hidden="true">＋</span> New project
           </button>
         </div>
       ) : (
@@ -399,9 +462,22 @@ export default function ProjectsPage() {
                       </span>
                     )}
                   </p>
-                  <p style={{ margin: "2px 0 0", fontSize: "12px", color: "var(--color-text-secondary)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={p.path}>
-                    {p.path}
-                  </p>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "2px" }}>
+                    <span aria-hidden="true" style={{ fontSize: "11px" }}>📁</span>
+                    <p style={{ margin: 0, fontSize: "12px", color: "var(--color-text-secondary)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "360px" }} title={p.path}>
+                      {p.path}
+                    </p>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleCopyPath(p);
+                      }}
+                      title="Copy path"
+                      style={{ background: "none", border: "none", color: "var(--color-text-secondary)", cursor: "pointer", fontSize: "11px", padding: "0 2px", flexShrink: 0 }}
+                    >
+                      {copiedId === p.id ? "✓ copied" : "copy"}
+                    </button>
+                  </div>
                 </div>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: "16px", flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
@@ -413,7 +489,7 @@ export default function ProjectsPage() {
                   {downloadingId === p.id ? "Zipping…" : "⬇ Download"}
                 </button>
                 <button onClick={() => startEdit(p)} style={btnStyle("ghost")}>
-                  Edit
+                  Rename
                 </button>
                 <button onClick={() => handleDelete(p)} style={btnStyle("danger")}>
                   Delete

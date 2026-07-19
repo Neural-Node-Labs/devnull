@@ -62,13 +62,16 @@ export function registerProjectRoutes(router: Router): void {
     res.json(body);
   });
 
+  // Projects only ever need a name now — the workspace folder is always created under the
+  // forced ./workspace root (see PROJECTS_ROOT in projectStore.ts), so there's no user-supplied
+  // path to fail with a permissions error.
   router.post("/projects", (req: Request, res: Response) => {
-    const { name, path: projectPath } = req.body as { name?: string; path?: string };
-    if (!name || !projectPath) {
-      res.status(400).json({ success: false, error: "'name' and 'path' are both required" } as ApiResponse);
+    const { name } = req.body as { name?: string };
+    if (!name || !name.trim()) {
+      res.status(400).json({ success: false, error: "'name' is required" } as ApiResponse);
       return;
     }
-    const result = addProject(name, projectPath);
+    const result = addProject(name);
     if (result.error) {
       res.status(400).json({ success: false, error: result.error } as ApiResponse);
       return;
@@ -77,7 +80,8 @@ export function registerProjectRoutes(router: Router): void {
   });
 
   router.put("/projects/:id", (req: Request, res: Response) => {
-    const result = updateProject(String(req.params.id), req.body ?? {});
+    const { name, includeInLlm } = req.body as { name?: string; includeInLlm?: boolean };
+    const result = updateProject(String(req.params.id), { name, includeInLlm });
     if (result.error) {
       res.status(result.error === "Project not found" ? 404 : 400).json({ success: false, error: result.error } as ApiResponse);
       return;

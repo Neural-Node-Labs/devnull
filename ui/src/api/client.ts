@@ -229,11 +229,13 @@ export const api = {
     return request<Project[]>("GET", "/projects");
   },
 
-  async addProject(name: string, path: string): Promise<ApiResponse<Project> & { created?: boolean }> {
-    return request<Project>("POST", "/projects", { name, path }) as Promise<ApiResponse<Project> & { created?: boolean }>;
+  /** Creates a project from a name only — the server always creates its workspace folder
+   *  under the forced ./workspace root, so there's no path for the caller to get wrong. */
+  async addProject(name: string): Promise<ApiResponse<Project> & { created?: boolean }> {
+    return request<Project>("POST", "/projects", { name }) as Promise<ApiResponse<Project> & { created?: boolean }>;
   },
 
-  async updateProject(id: string, updates: { name?: string; path?: string; includeInLlm?: boolean }): Promise<ApiResponse<Project>> {
+  async updateProject(id: string, updates: { name?: string; includeInLlm?: boolean }): Promise<ApiResponse<Project>> {
     return request<Project>("PUT", `/projects/${id}`, updates);
   },
 
@@ -348,4 +350,3 @@ export const api = {
     return request("POST", "/logout");
   },
 };
-

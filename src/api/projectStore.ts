@@ -14,6 +14,47 @@ export interface StoredProject {
 
 const STORE_PATH = path.join(os.homedir(), ".devnull", "projects.json");
 
+/**
+ * Every project workspace lives under this single, guaranteed-writable root instead of
+ * wherever the user happened to type. Letting people type an arbitrary path (an absolute
+ * Windows path copied from their own machine, a host path that doesn't exist inside the
+ * container, a directory the process's user doesn't own, etc.) is exactly what produced
+ * "unauthorized to create directory" errors. Now a project only ever needs a name — the
+ * folder is always created at PROJECTS_ROOT/<slug>.
+ *
+ * Override with DEVNULL_PROJECTS_ROOT if projects should live somewhere else (e.g. a mounted
+ * volume in production). Defaults to ./workspace relative to the server's cwd.
+ */
+export const PROJECTS_ROOT = path.resolve(
+  process.env.DEVNULL_PROJECTS_ROOT || path.join(process.cwd(), "workspace")
+);
+
+function ensureProjectsRoot(): void {
+  fs.mkdirSync(PROJECTS_ROOT, { recursive: true });
+}
+
+/** Turns a project name into a filesystem-safe folder name: lowercase, anything that isn't
+ *  a-z/0-9 collapsed to a single hyphen, leading/trailing hyphens trimmed. Falls back to
+ *  "project" if nothing usable survives (e.g. a name that's all emoji/punctuation). */
+function slugify(name: string): string {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "project";
+}
+
+/** Appends -2, -3, ... until the folder name doesn't collide with another stored project's
+ *  folder or a directory already sitting on disk from a previous run. */
+function uniqueSlug(base: string, taken: Set<string>): string {
+  const isFree = (candidate: string) => !taken.has(candidate) && !fs.existsSync(path.join(PROJECTS_ROOT, candidate));
+  if (isFree(base)) return base;
+  let n = 2;
+  while (!isFree(`${base}-${n}`)) n++;
+  return `${base}-${n}`;
+}
+
 function load(): StoredProject[] {
   if (!fs.existsSync(STORE_PATH)) return [];
   try {
@@ -40,81 +81,78 @@ export interface AddProjectResult {
   project?: StoredProject;
   error?: string;
   /** True when the directory didn't exist yet and was created as part of this call, so callers
-   *  can tell the user rather than silently creating folders on their filesystem. */
+   *  can tell the user rather than silently creating folders on their filesystem. In practice
+   *  this is now always true for a brand-new project, since the folder is freshly minted under
+   *  PROJECTS_ROOT every time. */
   created?: boolean;
 }
 
-/** Creates the directory if it doesn't exist yet (mkdir -p) rather than rejecting — this is
- *  meant to double as "set up a fresh workspace for a new project", not just "point at an
- *  existing one". Still rejects if the path exists but is a file, since that can't become a
- *  project root. */
-export function addProject(name: string, dirPath: string): AddProjectResult {
+/** Creates a new project. The workspace folder is always PROJECTS_ROOT/<slug-of-name> — never
+ *  a path the caller supplies — which is what makes this safe to call without any filesystem
+ *  permissions surprises. */
+export function addProject(name: string): AddProjectResult {
   const trimmedName = name.trim();
-  const trimmedPath = dirPath.trim();
   if (!trimmedName) return { error: "Project name is required" };
-  if (!trimmedPath) return { error: "Project path is required" };
-
-  let created = false;
-  if (!fs.existsSync(trimmedPath)) {
-    try {
-      fs.mkdirSync(trimmedPath, { recursive: true });
-      created = true;
-    } catch (err) {
-      return { error: `Could not create directory: ${err instanceof Error ? err.message : String(err)}` };
-    }
-  } else if (!fs.statSync(trimmedPath).isDirectory()) {
-    return { error: `Path exists but is not a directory: ${trimmedPath}` };
-  }
 
   const projects = load();
   if (projects.some((p) => p.name.toLowerCase() === trimmedName.toLowerCase())) {
     return { error: `A project named "${trimmedName}" already exists` };
   }
 
+  try {
+    ensureProjectsRoot();
+  } catch (err) {
+    return { error: `Could not create projects root at ${PROJECTS_ROOT}: ${err instanceof Error ? err.message : String(err)}` };
+  }
+
+  const takenSlugs = new Set(projects.map((p) => path.basename(p.path)));
+  const slug = uniqueSlug(slugify(trimmedName), takenSlugs);
+  const projectPath = path.join(PROJECTS_ROOT, slug);
+
+  try {
+    fs.mkdirSync(projectPath, { recursive: true });
+  } catch (err) {
+    return { error: `Could not create workspace directory: ${err instanceof Error ? err.message : String(err)}` };
+  }
+
   const project: StoredProject = {
     id: crypto.randomUUID(),
     name: trimmedName,
-    path: trimmedPath,
+    path: projectPath,
     active: projects.length === 0, // first project added becomes active by default
     includeInLlm: false,
     createdAt: new Date().toISOString(),
   };
   projects.push(project);
   save(projects);
-  return { project, created };
+  return { project, created: true };
 }
 
 export interface UpdateProjectInput {
   name?: string;
-  path?: string;
   includeInLlm?: boolean;
 }
 
+/** Renaming a project only changes its display name — the workspace folder on disk keeps its
+ *  original slug. (Renaming the folder too would mean rewriting `path` mid-run for anything
+ *  that might currently be operating against it; safer to leave it put.) */
 export function updateProject(id: string, updates: UpdateProjectInput): AddProjectResult {
   const projects = load();
   const project = projects.find((p) => p.id === id);
   if (!project) return { error: "Project not found" };
 
-  let created = false;
-  if (updates.path !== undefined) {
-    const trimmedPath = updates.path.trim();
-    if (!fs.existsSync(trimmedPath)) {
-      try {
-        fs.mkdirSync(trimmedPath, { recursive: true });
-        created = true;
-      } catch (err) {
-        return { error: `Could not create directory: ${err instanceof Error ? err.message : String(err)}` };
-      }
-    } else if (!fs.statSync(trimmedPath).isDirectory()) {
-      return { error: `Path exists but is not a directory: ${trimmedPath}` };
+  if (updates.name !== undefined) {
+    const trimmedName = updates.name.trim();
+    if (!trimmedName) return { error: "Project name is required" };
+    if (projects.some((p) => p.id !== id && p.name.toLowerCase() === trimmedName.toLowerCase())) {
+      return { error: `A project named "${trimmedName}" already exists` };
     }
-    project.path = trimmedPath;
+    project.name = trimmedName;
   }
-  if (updates.name !== undefined) project.name = updates.name.trim();
   if (updates.includeInLlm !== undefined) project.includeInLlm = updates.includeInLlm;
 
   save(projects);
-  return { project, created };
+  return { project };
 }
 
 export function setActiveProject(id: string): AddProjectResult {
