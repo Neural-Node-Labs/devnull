@@ -3,7 +3,21 @@ import path from "node:path";
 import os from "node:os";
 import fs from "node:fs";
 import { globTool } from "./globTool.js";
-import { sshExec, scpUpload, SshTarget, SshResult } from "./sshTool.js";
+import type { SshTarget, SshResult } from "./sshTool.js";
+
+// Dynamic getters for sshTool functions to avoid stale module cache.
+// These always load the latest compiled version.
+async function getSshTool() {
+  return import("./sshTool.js?t=" + Date.now());
+}
+async function sshExec(target: SshTarget, command: string): Promise<SshResult> {
+  const mod = await getSshTool();
+  return mod.sshExec(target, command);
+}
+async function scpUpload(target: SshTarget, localPath: string, remotePath: string, recursive?: boolean): Promise<SshResult> {
+  const mod = await getSshTool();
+  return mod.scpUpload(target, localPath, remotePath, recursive);
+}
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 

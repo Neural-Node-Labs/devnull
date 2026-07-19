@@ -49,9 +49,9 @@ def create_tar_of_workspace():
     return buf.read()
 
 
-def exec_command(client, command, timeout=300):
+def exec_command(client, command, timeout=300, use_pty=False):
     """Run a command and return (exit_code, stdout, stderr)"""
-    stdin, stdout, stderr = client.exec_command(command, timeout=timeout, get_pty=True)
+    stdin, stdout, stderr = client.exec_command(command, timeout=timeout, get_pty=use_pty)
     exit_code = stdout.channel.recv_exit_status()
     out = stdout.read().decode('utf-8', errors='replace')
     err = stderr.read().decode('utf-8', errors='replace')
@@ -104,14 +104,29 @@ def main():
             sys.exit(1)
         print(f"  Extracted: {out[:500]}")
         
-        # Step 5: Docker compose up
-        print(f"\n[5/6] Running docker compose up -d --build...")
-        code, out, err = exec_command(client, f"cd {REMOTE_PATH} && docker compose up -d --build", timeout=600)
+        # Step 5: Check lock file sync first
+        print(f"\n[5/6] Checking lock file sync...")
+        code, out, err = exec_command(client, f"cd {REMOTE_PATH} && head -5 package.json && echo '---LOCK---' && head -5 package-lock.json && echo '---UI---' && cd ui && head -5 package.json && echo '---UI_LOCK---' && head -5 package-lock.json", timeout=30, use_pty=False)
+        print(f"  {out[:500]}")
+
+        # Step 5b: Run npm install on remote to sync lock files
+        print(f"\n[5b/6] Syncing npm packages on remote...")
+        code, out, err = exec_command(client, f"cd {REMOTE_PATH} && npm install 2>&1", timeout=120, use_pty=False)
+        print(f"  npm install (api): exit={code}, {out[:500]}")
+        code, out, err = exec_command(client, f"cd {REMOTE_PATH}/ui && npm install 2>&1", timeout=120, use_pty=False)
+        print(f"  npm install (ui): exit={code}, {out[:500]}")
+
+        # Step 5c: Docker compose up
+        print(f"\n[5c/6] Running docker compose up -d --build...")
+        code, out, err = exec_command(client, f"cd {REMOTE_PATH} && docker compose up -d --build 2>&1", timeout=600, use_pty=False)
         print(f"  Exit code: {code}")
-        if out:
-            print(f"  stdout: {out[:2000]}")
-        if err:
-            print(f"  stderr: {err[:2000]}")
+        combined = out + err
+        if combined:
+            # Filter out ANSI escape sequences and non-ASCII chars
+            import re
+            clean = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', combined)
+            clean = clean.encode('ascii', errors='replace').decode('ascii')
+            print(f"  Output:\n{clean[:3000]}")
         
         if code != 0:
             print("  WARNING: docker compose returned non-zero exit code")
@@ -136,7 +151,7 @@ def main():
         code, out, err = exec_command(client, "curl -s -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 10 http://localhost:8080/ 2>/dev/null || echo 'failed'")
         print(f"  UI health endpoint: HTTP {out.strip()}")
         
-        print("\n✅ Deployment complete!")
+        print("\n[OK] Deployment complete!")
         
     except paramiko.AuthenticationException:
         print("ERROR: Authentication failed. Check REMOTE_SSH_USER and REMOTE_SSH_PASSWORD.")

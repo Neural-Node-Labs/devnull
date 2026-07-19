@@ -16,7 +16,6 @@ import { sshRunCommand } from "./sshRunCommandTool.js";
 import { crawlSiteMap, formatSiteMap } from "./siteCrawlerTool.js";
 import { loadRemoteConfig } from "../remote/config.js";
 import { githubClone, githubFetch, githubPull, githubStatus, githubCommit, githubPush } from "./githubTool.js";
-import { deployWorkspaceViaSsh } from "./dockerDeploySshTool.js";
 import { dockerComposeUp } from "./dockerComposeDeployTool.js";
 import { rebuildIndex, readIndexedFile } from "./indexingTool.js";
 import { readTaskHistory, searchTaskHistory } from "../core/taskHistory.js";
@@ -248,6 +247,8 @@ export async function dispatchToolCall(call: ToolCall, cwd: string = process.cwd
         return { toolCallId: call.id, toolName: name, observation: result, isError: result.exitCode !== 0 };
       }
       case "docker_deploy_ssh_tool": {
+        // Dynamic import with cache-busting so newly compiled code is picked up without restart
+        const { deployWorkspaceViaSsh } = await import("./dockerDeploySshTool.js?t=" + Date.now());
         // Resolve credentials: prefer env-var names (safer), fall back to inline values
         const resolvedUser = args.userEnvVar ? (process.env[args.userEnvVar] ?? "") : (args.user ?? "");
         const resolvedPassword = args.passwordEnvVar ? (process.env[args.passwordEnvVar] ?? "") : undefined;
