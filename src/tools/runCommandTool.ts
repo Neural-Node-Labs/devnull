@@ -14,7 +14,14 @@ export interface CommandResult {
  */
 export function runCommand(command: string, cwd: string = process.cwd(), timeoutMs = 120_000): Promise<CommandResult> {
   return new Promise((resolve) => {
-    const child = spawn(command, { cwd, shell: true, timeout: timeoutMs });
+    // Strip NODE_ENV so it doesn't leak from devnull's own container runtime
+    // config (set to "production" in the Dockerfile/docker-compose.yml) into
+    // build/install commands run against the target workspace. Left as-is,
+    // `npm install`/`npm ci` in child commands would silently skip
+    // devDependencies for any project devnull is asked to work on.
+    const { NODE_ENV, ...childEnv } = process.env;
+
+    const child = spawn(command, { cwd, shell: true, timeout: timeoutMs, env: childEnv });
     let stdout = "";
     let stderr = "";
 
@@ -26,4 +33,3 @@ export function runCommand(command: string, cwd: string = process.cwd(), timeout
     });
   });
 }
-
