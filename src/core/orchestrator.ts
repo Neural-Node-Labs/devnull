@@ -14,8 +14,12 @@ import {
   reportSubagentStart,
   reportUsage,
   reportTotalUsage,
+  reportHealthWarning,
 } from "./consoleReporter.js";
 import { compactStaleFileReads } from "./contextCompaction.js";
+import { createHealthState, scoreStep, rollingHealth, HealthState } from "./stepScorer.js";
+import { appendTaskHistory } from "./taskHistory.js";
+import { prepareWorkspace } from "./workspaceManager.js";
 
 export interface OrchestratorOptions {
   maxIterations?: number; // "iteration maxout" ceiling per round
@@ -52,6 +56,24 @@ export interface OrchestratorOptions {
    * what is and isn't touched, and why. Default: false — existing full-history behavior.
    */
   leanToken?: boolean;
+  /**
+   * When true (default), scores each tool step heuristically (see stepScorer.ts) and, if the
+   * rolling average drops low, injects a one-time nudge into context asking the model to
+   * reconsider its approach instead of continuing down a stuck path. Purely heuristic — no
+   * extra LLM calls, no added cost/latency.
+   */
+  selfHealing?: boolean;
+  /**
+   * When true, tool operations (read/write/run_command/glob/grep/etc.) run against an isolated
+   * copy of the project at <cwd>/workspace-agent/ instead of the live project directory — see
+   * workspaceManager.ts. Protocol, lessons, task history, and todo.md still read/write at the
+   * original project root regardless, since those are meant to persist across resets rather
+   * than live inside the disposable copy. Default: false.
+   */
+  isolatedWorkspace?: boolean;
+  /** Internal — lets subagents inherit the real project root for protocol/history/todo even
+   *  when their `cwd` points at an already-isolated workspace-agent copy. Do not set directly. */
+  projectRoot?: string;
 }
 
 export interface RunOptions {
@@ -81,13 +103,30 @@ const VALIDATION_COMMANDS = /\b(test|lint|type-?check|tsc|jest|pytest|kubectl (a
  */
 export class ReActOrchestrator {
   private registry = new SkillRegistry();
-  private cwd: string;
+  private cwd: string; // tool-execution root; becomes workspace-agent/ when isolatedWorkspace is on
+  private projectRoot: string; // protocol/lessons/history/todo always live here, never inside workspace-agent
 
   /** Running total for this orchestrator instance, including every LLM call it made directly
    *  (main loop, goal validation, plan generation) plus everything its subagents used — see
    *  runSubagent(), which folds each subagent's total into its parent's before returning. */
   private cumulativeUsage: LlmUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0, reasoningTokens: 0, cachedTokens: 0 };
   private llmCallCount = 0;
+  private health: HealthState = createHealthState();
+  private lastNudgeIteration = -Infinity;
+  private lastOutcome: "completed" | "iteration_limit" | "plan_rejected" = "completed";
+
+  /** How the most recent run() call ended. "completed" means a genuine final answer was
+   *  reached; anything else means the returned text is a fallback explanation, not a real
+   *  result, and callers (e.g. the API) should surface that distinction rather than treating
+   *  it as a normal success. */
+  getLastOutcome(): "completed" | "iteration_limit" | "plan_rejected" {
+    return this.lastOutcome;
+  }
+
+  /** Read-only view of this run's rolling self-healing health score (0-100, 100 = no signal yet). */
+  getHealthScore(window = 5): number {
+    return rollingHealth(this.health, window);
+  }
 
   constructor(
     private llm: LlmClient,
@@ -95,6 +134,14 @@ export class ReActOrchestrator {
     private opts: OrchestratorOptions = {}
   ) {
     this.cwd = opts.cwd ?? process.cwd();
+    this.projectRoot = opts.projectRoot ?? this.cwd;
+  }
+
+  /** The effective tool-execution root for this run — the isolated workspace-agent copy when
+   *  isolatedWorkspace is on, otherwise the project root itself. Useful for callers (e.g. the
+   *  API's download endpoint) that need to know where the agent actually wrote its output. */
+  getWorkspacePath(): string {
+    return this.cwd;
   }
 
   /** Read-only view of this run's cumulative token usage (includes subagent usage). */
@@ -136,12 +183,20 @@ export class ReActOrchestrator {
   }
 
   async run(taskDescription: string, runOpts: RunOptions = {}): Promise<string> {
+    this.lastOutcome = "completed";
+    if (this.opts.isolatedWorkspace && !runOpts.isSubagent) {
+      this.cwd = prepareWorkspace(this.projectRoot);
+    }
+
     const skills = this.selectSkills(taskDescription);
     const maxIterations = this.opts.maxIterations ?? 20;
 
     const indent = this.opts.consoleIndent ?? 0;
     const headerPrefix = indent > 0 ? "  ".repeat(indent) : "";
     console.log(`${headerPrefix}\n--- Running task: "${taskDescription}" ---\n${headerPrefix} (maxIterations=${maxIterations}, planMode=${this.opts.planMode ?? "auto"}, validateGoal=${this.opts.validateGoal ?? true})\n`);
+    if (this.opts.isolatedWorkspace && !runOpts.isSubagent) {
+      console.log(`${headerPrefix}Operating in isolated workspace: ${this.cwd}\n`);
+    }
 
     if (!runOpts.isSubagent) {
       if (skills.length === 0) {
@@ -162,12 +217,13 @@ export class ReActOrchestrator {
       const proceed = await this.runPlanMode(taskDescription, skills);
       if (!proceed) {
         console.log("Plan rejected. Stopping.");
-        return "";
+        this.lastOutcome = "plan_rejected";
+        return "(No changes were made — the generated plan was not approved before execution.)";
       }
     }
 
     const messages: LlmMessage[] = [
-      { role: "system", content: buildSystemPrompt(skills, this.cwd) },
+      { role: "system", content: buildSystemPrompt(skills, this.projectRoot) },
       { role: "user", content: taskDescription },
     ];
 
@@ -200,7 +256,11 @@ export class ReActOrchestrator {
         });
         if (!shouldContinue) {
           console.log("Stopping at user's request.");
-          return finalContent;
+          this.lastOutcome = "iteration_limit";
+          finalContent =
+            finalContent ||
+            `(Task stopped: hit the ${maxIterations}-iteration limit${restartCount > 0 ? ` after ${restartCount} restart(s)` : ""} without reaching a final answer. Partial progress may exist in the workspace — check task_history_tool or the workspace files directly.)`;
+          break;
         }
         restartCount += 1;
         iteration = 1; // reset iteration count for another round
@@ -242,7 +302,7 @@ export class ReActOrchestrator {
           await this.telemetry.logThought({
             iteration,
             phase: "validation",
-            thought: response.content,
+            thought: deriveThought(response),
             action: { tool: "goal_validator", input: { transcript } },
             observation: verdict,
           });
@@ -262,7 +322,7 @@ export class ReActOrchestrator {
           }
         }
 
-        await this.telemetry.logThought({ iteration, phase: "validation", thought: response.content });
+        await this.telemetry.logThought({ iteration, phase: "validation", thought: deriveThought(response) });
         if (validationEnabled && validatorRejections >= maxValidatorRetries) {
           await this.telemetry.logError(
             { reason: "validator retries exhausted, accepting claim unverified" },
@@ -298,7 +358,7 @@ export class ReActOrchestrator {
           await this.telemetry.logThought({
             iteration,
             phase: "search",
-            thought: response.content,
+            thought: deriveThought(response),
             action: { tool: "subagent_tool", input: safeParse(call.function.arguments) },
             observation,
           });
@@ -310,14 +370,26 @@ export class ReActOrchestrator {
         const step: ReActStep = {
           iteration,
           phase,
-          thought: response.content,
+          thought: deriveThought(response),
           action: { tool: call.function.name, input: safeParse(call.function.arguments) },
         };
 
         if (showConsole) reportAction(step.action!.tool, step.action!.input, indent);
         const result = await dispatchToolCall(call, this.cwd);
         step.observation = result.observation;
-        if (showConsole) reportObservation(result.observation, result.isError, indent);
+
+        const selfHealingOn = this.opts.selfHealing !== false;
+        if (selfHealingOn) {
+          const { score } = scoreStep(this.health, {
+            tool: result.toolName,
+            args: step.action!.input,
+            observation: result.observation,
+            isError: result.isError,
+          });
+          step.score = score;
+        }
+
+        if (showConsole) reportObservation(result.observation, result.isError, indent, step.score);
         await this.telemetry.logThought(step);
 
         if (result.isError) {
@@ -342,13 +414,37 @@ export class ReActOrchestrator {
         }
       }
       // Loop continues: the new Observations go back in as context for the next Thought.
+
+      if (this.opts.selfHealing !== false) {
+        const avgHealth = rollingHealth(this.health);
+        const cooldownPassed = iteration - this.lastNudgeIteration >= 3;
+        if (avgHealth < 40 && cooldownPassed && this.health.scores.length >= 2) {
+          this.lastNudgeIteration = iteration;
+          if (showConsole) reportHealthWarning(avgHealth, indent);
+          messages.push({
+            role: "user",
+            content: `[self-check] Your last several steps haven't been making much progress (rolling health score: ${avgHealth}/100 — errors and/or repeated identical actions with no new information). Before continuing: re-read the current state of whatever you're working on rather than assuming, double-check your last assumption was actually correct, and consider a genuinely different approach instead of retrying something similar.`,
+          });
+        }
+      }
     }
 
     if (shouldPlan && !runOpts.isSubagent) {
-      appendTodoReview(this.cwd, finalContent);
+      appendTodoReview(this.projectRoot, finalContent);
+    }
+    if (!runOpts.isSubagent) {
+      appendTaskHistory(this.projectRoot, {
+        task: taskDescription,
+        summary: finalContent,
+        iterations: iteration,
+        totalTokens: this.cumulativeUsage.totalTokens || undefined,
+      });
     }
     if (showConsole && !runOpts.isSubagent) {
       reportTotalUsage(this.cumulativeUsage, this.llmCallCount, indent);
+      if (this.health.scores.length > 0) {
+        console.log(`${"  ".repeat(indent)}📈 Final health score: ${this.getHealthScore()}/100 (${this.health.scores.length} scored steps)`);
+      }
     }
     return finalContent;
   }
@@ -368,6 +464,7 @@ export class ReActOrchestrator {
     const sub = new ReActOrchestrator(this.llm, this.telemetry, {
       ...this.opts,
       cwd: this.cwd,
+      projectRoot: this.projectRoot,
       consoleIndent: (this.opts.consoleIndent ?? 0) + 1,
     });
     const result = await sub.run(task, { skipPlanMode: true, isSubagent: true });
@@ -392,7 +489,7 @@ export class ReActOrchestrator {
       {
         role: "system",
         content:
-          buildProtocolPrompt(this.cwd) +
+          buildProtocolPrompt(this.projectRoot) +
           "You are in Plan Mode. Do not call any tools. Produce a short, concrete, checkable " +
           "plan for the task below as a markdown checklist (`- [ ] step`), 3-8 steps. " +
           "No prose outside the checklist." +
@@ -427,7 +524,7 @@ export class ReActOrchestrator {
    */
   private async runPlanMode(taskDescription: string, skills: LoadedSkill[]): Promise<boolean> {
     const planMarkdown = await this.generatePlan(taskDescription);
-    writeTodo(this.cwd, planMarkdown);
+    writeTodo(this.projectRoot, planMarkdown);
 
     const interactive = this.opts.interactive !== false; // default true
     if (!interactive) {
@@ -486,6 +583,19 @@ function classifyPhase(toolName: string, args: string): Phase {
   return "action";
 }
 
+/**
+ * What actually gets stored as this step's "thought" in telemetry. `response.content` is the
+ * primary source (the model's stated reasoning alongside a tool call), but some models —
+ * especially when calling a tool with nothing else to say — return an empty content string and
+ * put everything in `reasoning_content` instead (thinking-mode) or nothing at all. Falling back
+ * to reasoningContent keeps telemetry consistent with what the live console already shows (see
+ * consoleReporter.ts's reportThought, which does the same fallback) instead of silently
+ * recording "" when there was actually something to show.
+ */
+function deriveThought(response: { content: string; reasoningContent?: string }): string {
+  return response.content || response.reasoningContent || "(no explicit reasoning before this action)";
+}
+
 function safeParse(json: string): unknown {
   try {
     return JSON.parse(json);
@@ -504,7 +614,12 @@ function buildSystemPrompt(skills: LoadedSkill[], cwd: string): string {
     "playwright_run_tool), and delegating isolated sub-tasks (subagent_tool). Follow the ReAct " +
     "pattern: search for context before editing, and always validate your changes before " +
     "considering a task done. Stop calling tools once the task is verified complete, and " +
-    "summarize what you did.";
+    "summarize what you did.\n\n" +
+    "You do NOT automatically have any memory of previous tasks in this workspace — each task " +
+    "starts fresh. If the user says something like 'continue', 'keep going', 'what was the last " +
+    "task', or otherwise references earlier work without restating what it was, call " +
+    "task_history_tool (action='recent') before doing anything else to find out what that refers " +
+    "to. Don't guess or assume.";
 
   const skillBlocks = skills.length
     ? `\n\nThe following specialized skill directives are loaded for this task — follow their Process/Strategies/Instructions/Planning/Experience guidance:\n\n${skills

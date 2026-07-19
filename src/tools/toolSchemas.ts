@@ -194,7 +194,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     function: {
       name: "subagent_tool",
       description:
-        "Delegate a focused research/exploration/analysis task to a fresh sub-agent with its own isolated context. Only the sub-agent's final summary comes back - its intermediate tool calls and reasoning never enter your context window. Use this for parallel investigation, large searches, or any sub-task whose detail you don't need to carry forward.",
+        "Delegate a focused research/exploration/analysis task to a fresh sub-agent with its own isolated context. Only the sub-agent's final summary comes back — its intermediate tool calls and reasoning never enter your context window. Use this for parallel investigation, large searches, or any sub-task whose detail you don't need to carry forward.",
       parameters: {
         type: "object",
         properties: {
@@ -229,19 +229,19 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     type: "function",
     function: {
-      name: "crawl_site_mapper_tool",
+      name: "task_history_tool",
       description:
-        "Crawl a URL and build a site map of all discoverable internal pages. Uses BFS to traverse same-domain links, records page titles, HTTP status codes, and the link graph. Returns a structured SiteMap with a tree hierarchy.",
+        "Query the persistent history of previously completed top-level tasks in this workspace. This is NOT automatically included in your context — you must call this explicitly whenever you need it, e.g. the user says 'continue', asks 'what was the last task', references earlier work without repeating what it was, or you need to check whether something was already done in a prior session.",
       parameters: {
         type: "object",
         properties: {
-          url: { type: "string", description: "Starting URL to crawl" },
-          maxPages: { type: "number", description: "Maximum number of pages to crawl (default: 50)" },
-          maxDepth: { type: "number", description: "Maximum crawl depth (default: 5)" },
-          sameDomain: { type: "boolean", description: "Only crawl same-domain links (default: true)" },
+          action: { type: "string", description: "'recent' to get the most recent tasks, or 'search' to keyword-search past task descriptions/summaries" },
+          limit: { type: "number", description: "Max number of tasks to return, defaults to 5" },
+          query: { type: "string", description: "Keyword to search for; required when action='search'" },
         },
-        required: ["url"],
+        required: ["action"],
       },
     },
   },
 ];
+

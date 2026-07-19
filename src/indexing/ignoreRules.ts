@@ -57,3 +57,4 @@ export function loadIgnoreRules(cwd: string = process.cwd()): string[] {
   }
   return [...rules];
 }
+

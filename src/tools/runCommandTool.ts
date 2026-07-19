@@ -26,3 +26,4 @@ export function runCommand(command: string, cwd: string = process.cwd(), timeout
     });
   });
 }
+

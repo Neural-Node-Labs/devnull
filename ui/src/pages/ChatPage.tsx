@@ -1,29 +1,44 @@
 import React, { useState, useRef, useEffect } from "react";
-import { api } from "../api/client";
+import { api, ChatOptions } from "../api/client";
 
 interface ChatMessage {
-  role: "user" | "assistant" | "system";
+  role: "user" | "assistant" | "system" | "limitation";
   content: string;
   timestamp: Date;
+  usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
+  healthScore?: number;
 }
 
 export function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [planMode, setPlanMode] = useState<"auto" | "always" | "never">("always");
+  const [leanToken, setLeanToken] = useState(false);
+  const [isolatedWorkspace, setIsolatedWorkspace] = useState(false);
+  const [maxIterations, setMaxIterations] = useState<number | "">("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [currentPlan, setCurrentPlan] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [isListening, setIsListening] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const recognitionRef = useRef<any>(null);
 
-  // Keep the newest message in view as the conversation grows
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, loading]);
+
+  const buildOptions = (): ChatOptions => {
+    const opts: ChatOptions = { planMode };
+    if (leanToken) opts.leanToken = true;
+    if (isolatedWorkspace) opts.isolatedWorkspace = true;
+    if (maxIterations !== "" && maxIterations > 0) opts.maxIterations = maxIterations;
+    return opts;
+  };
 
   const handleNewChat = () => {
     if (messages.length > 0 && !confirm("Start a new chat? The current conversation will be cleared.")) return;
@@ -37,11 +52,7 @@ export function ChatPage() {
   const handleSend = async () => {
     if (!input.trim() || loading) return;
 
-    const userMessage: ChatMessage = {
-      role: "user",
-      content: input.trim(),
-      timestamp: new Date(),
-    };
+    const userMessage: ChatMessage = { role: "user", content: input.trim(), timestamp: new Date() };
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
     setLoading(true);
@@ -52,61 +63,42 @@ export function ChatPage() {
     try {
       const controller = new AbortController();
       abortControllerRef.current = controller;
-      const res = await api.chat(userMessage.content, planMode, controller.signal);
+      const res = await api.chat(userMessage.content, buildOptions(), controller.signal);
+
       if (res.success && res.data) {
-        const data = res.data as any;
+        const data = res.data;
 
         if (data.plan) {
           setCurrentPlan(data.plan);
           setSessionId(data.sessionId ?? null);
-          setMessages((prev) => [
-            ...prev,
-            {
-              role: "system",
-              content: `📋 Plan generated:\n${data.plan}`,
-              timestamp: new Date(),
-            },
-          ]);
+          setMessages((prev) => [...prev, { role: "system", content: `📋 Plan generated:\n${data.plan}`, timestamp: new Date() }]);
         }
 
         if (data.result) {
           setMessages((prev) => [
             ...prev,
-            {
-              role: "assistant",
-              content: data.result,
-              timestamp: new Date(),
-            },
+            { role: "assistant", content: data.result, timestamp: new Date(), usage: data.usage, healthScore: data.healthScore },
           ]);
+        }
+
+        // The task ran but didn't cleanly finish (iteration limit / plan rejected) — this is
+        // distinct from a transport error: the agent produced a real, honest explanation of
+        // why it stopped, and that deserves its own visual treatment, not silence and not the
+        // same red "something broke" styling as an actual exception.
+        if (data.limitation) {
+          setMessages((prev) => [...prev, { role: "limitation", content: data.limitation!, timestamp: new Date() }]);
         }
       } else {
         setError(res.error ?? "Request failed");
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: "system",
-            content: `❌ Error: ${res.error ?? "Request failed"}`,
-            timestamp: new Date(),
-          },
-        ]);
+        setMessages((prev) => [...prev, { role: "system", content: `❌ Error: ${res.error ?? "Request failed"}`, timestamp: new Date() }]);
       }
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
-        setMessages((prev) => [
-          ...prev,
-          { role: "system", content: "⏹️ Request cancelled", timestamp: new Date() },
-        ]);
+        setMessages((prev) => [...prev, { role: "system", content: "⏹️ Request cancelled", timestamp: new Date() }]);
       } else {
         const msg = err instanceof Error ? err.message : "An error occurred";
         setError(msg);
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: "system",
-            content: `❌ Error: ${msg}`,
-            timestamp: new Date(),
-          },
-        ]);
+        setMessages((prev) => [...prev, { role: "system", content: `❌ Error: ${msg}`, timestamp: new Date() }]);
       }
     } finally {
       abortControllerRef.current = null;
@@ -124,15 +116,14 @@ export function ChatPage() {
     try {
       const res = await api.executePlan(sessionId);
       if (res.success && res.data) {
-        const data = res.data as any;
+        const data = res.data;
         setMessages((prev) => [
           ...prev,
-          {
-            role: "assistant",
-            content: data.result ?? "Plan executed successfully",
-            timestamp: new Date(),
-          },
+          { role: "assistant", content: data.result ?? "Plan executed successfully", timestamp: new Date(), usage: data.usage, healthScore: data.healthScore },
         ]);
+        if (data.limitation) {
+          setMessages((prev) => [...prev, { role: "limitation", content: data.limitation!, timestamp: new Date() }]);
+        }
         setCurrentPlan(null);
         setSessionId(null);
       } else {
@@ -146,52 +137,69 @@ export function ChatPage() {
   };
 
   const handleRejectPlan = () => {
-    setMessages((prev) => [
-      ...prev,
-      {
-        role: "system",
-        content: "❌ Plan rejected",
-        timestamp: new Date(),
-      },
-    ]);
+    setMessages((prev) => [...prev, { role: "system", content: "❌ Plan rejected", timestamp: new Date() }]);
     setCurrentPlan(null);
     setSessionId(null);
   };
 
+  // Real Web Speech API integration — transcribes into the input box. No fake "listening..."
+  // placeholder; if the browser doesn't support it, we say so and stop.
   const handleVoiceToggle = () => {
-    if (!("webkitSpeechRecognition" in window) && !("SpeechRecognition" in window)) {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
       setError("Speech recognition is not supported in this browser");
       return;
     }
-    setIsListening(!isListening);
-    // In a real implementation, this would use the Web Speech API
-    if (!isListening) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "system",
-          content: "🎤 Listening... (speech recognition would start here)",
-          timestamp: new Date(),
-        },
-      ]);
+
+    if (isListening) {
+      recognitionRef.current?.stop();
+      return;
     }
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = "en-US";
+
+    recognition.onresult = (event: any) => {
+      const transcript = Array.from(event.results)
+        .map((r: any) => r[0].transcript)
+        .join("");
+      setInput(transcript);
+    };
+    recognition.onerror = (event: any) => {
+      setError(`Speech recognition error: ${event.error}`);
+      setIsListening(false);
+    };
+    recognition.onend = () => setIsListening(false);
+
+    recognitionRef.current = recognition;
+    recognition.start();
+    setIsListening(true);
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (files && files.length > 0) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "system",
-          content: `📎 File uploaded: ${files[0].name}`,
-          timestamp: new Date(),
-        },
-      ]);
-    }
-    // Reset the input so the same file can be uploaded again
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
+  // Real upload to the currently active project's workspace (see api.uploadProjectFile).
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (fileInputRef.current) fileInputRef.current.value = "";
+
+    setUploading(true);
+    try {
+      const projectsRes = await api.listProjects();
+      const active = projectsRes.data?.find((p) => p.active);
+      if (!active) {
+        setMessages((prev) => [...prev, { role: "system", content: "❌ No active project — add or select a project first (Projects page) before uploading.", timestamp: new Date() }]);
+        return;
+      }
+      const res = await api.uploadProjectFile(active.id, file);
+      if (res.success && res.data) {
+        setMessages((prev) => [...prev, { role: "system", content: `📎 Uploaded "${res.data!.path}" to ${active.name}'s workspace`, timestamp: new Date() }]);
+      } else {
+        setMessages((prev) => [...prev, { role: "system", content: `❌ Upload failed: ${res.error ?? "unknown error"}`, timestamp: new Date() }]);
+      }
+    } finally {
+      setUploading(false);
     }
   };
 
@@ -203,42 +211,28 @@ export function ChatPage() {
     marginBottom: "16px",
   };
 
+  const checkboxLabel: React.CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    gap: "6px",
+    fontSize: "12px",
+    color: "var(--color-text-secondary)",
+    cursor: "pointer",
+  };
+
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "24px" }}>
         <h1 style={{ fontSize: "24px", fontWeight: 700, margin: 0 }}>Chat</h1>
         {messages.length > 0 && (
-          <button
-            onClick={handleNewChat}
-            style={{
-              padding: "6px 14px",
-              borderRadius: "6px",
-              border: "1px solid var(--color-border)",
-              background: "transparent",
-              color: "var(--color-text-secondary)",
-              fontSize: "13px",
-              cursor: "pointer",
-            }}
-          >
+          <button onClick={handleNewChat} style={{ padding: "6px 14px", borderRadius: "6px", border: "1px solid var(--color-border)", background: "transparent", color: "var(--color-text-secondary)", fontSize: "13px", cursor: "pointer" }}>
             + New chat
           </button>
         )}
       </div>
 
       {/* Chat messages */}
-      <div
-        role="log"
-        aria-live="polite"
-        aria-label="Chat messages"
-        style={{
-          ...sectionStyle,
-          maxHeight: "480px",
-          overflowY: "auto",
-          display: "flex",
-          flexDirection: "column",
-          gap: "12px",
-        }}
-      >
+      <div role="log" aria-live="polite" aria-label="Chat messages" style={{ ...sectionStyle, maxHeight: "480px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "12px" }}>
         {messages.length === 0 ? (
           <p style={{ color: "var(--color-text-secondary)", textAlign: "center", padding: "40px" }}>
             Send a message to start chatting with devnull
@@ -253,71 +247,40 @@ export function ChatPage() {
                 background:
                   msg.role === "user"
                     ? "color-mix(in srgb, var(--color-primary) 10%, transparent)"
+                    : msg.role === "limitation"
+                    ? "color-mix(in srgb, var(--color-warning, #f59e0b) 15%, transparent)"
                     : msg.role === "system"
                     ? "color-mix(in srgb, var(--color-accent) 10%, transparent)"
                     : "var(--color-bg-secondary)",
+                border: msg.role === "limitation" ? "1px solid color-mix(in srgb, var(--color-warning, #f59e0b) 40%, transparent)" : "none",
                 alignSelf: msg.role === "user" ? "flex-end" : "flex-start",
                 maxWidth: "80%",
               }}
             >
-              <span
-                style={{
-                  fontSize: "11px",
-                  fontWeight: 600,
-                  color: "var(--color-text-secondary)",
-                  marginBottom: "4px",
-                  display: "block",
-                }}
-              >
-                {msg.role === "user" ? "You" : msg.role === "assistant" ? "devnull" : "System"}
+              <span style={{ fontSize: "11px", fontWeight: 600, color: "var(--color-text-secondary)", marginBottom: "4px", display: "block" }}>
+                {msg.role === "user" ? "You" : msg.role === "assistant" ? "devnull" : msg.role === "limitation" ? "⚠ Limitation" : "System"}
               </span>
-              <p style={{ margin: 0, fontSize: "14px", lineHeight: "1.5", whiteSpace: "pre-wrap" }}>
-                {msg.content}
-              </p>
-              <span
-                style={{
-                  fontSize: "10px",
-                  color: "var(--color-text-secondary)",
-                  marginTop: "4px",
-                  display: "block",
-                }}
-              >
+              <p style={{ margin: 0, fontSize: "14px", lineHeight: "1.5", whiteSpace: "pre-wrap" }}>{msg.content}</p>
+              {(msg.usage || msg.healthScore !== undefined) && (
+                <p style={{ margin: "8px 0 0", fontSize: "10px", color: "var(--color-text-secondary)", borderTop: "1px solid var(--color-border)", paddingTop: "6px" }}>
+                  {msg.usage && `🪙 ${msg.usage.totalTokens.toLocaleString()} tokens`}
+                  {msg.usage && msg.healthScore !== undefined && " · "}
+                  {msg.healthScore !== undefined && `📈 health ${msg.healthScore}/100`}
+                </p>
+              )}
+              <span style={{ fontSize: "10px", color: "var(--color-text-secondary)", marginTop: "4px", display: "block" }}>
                 {msg.timestamp.toLocaleTimeString()}
               </span>
             </div>
           ))
         )}
         {loading && (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: "12px",
-              padding: "12px 16px",
-              borderRadius: "8px",
-              background: "var(--color-bg-secondary)",
-              alignSelf: "flex-start",
-              color: "var(--color-text-secondary)",
-              fontSize: "14px",
-            }}
-          >
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", padding: "12px 16px", borderRadius: "8px", background: "var(--color-bg-secondary)", alignSelf: "flex-start", color: "var(--color-text-secondary)", fontSize: "14px" }}>
             <span style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               <span className="devnull-spinner" aria-hidden="true" />
               Thinking...
             </span>
-            <button
-              onClick={handleCancel}
-              style={{
-                background: "transparent",
-                border: "1px solid var(--color-border)",
-                color: "var(--color-text-secondary)",
-                borderRadius: "6px",
-                padding: "4px 10px",
-                fontSize: "12px",
-                cursor: "pointer",
-              }}
-            >
+            <button onClick={handleCancel} style={{ background: "transparent", border: "1px solid var(--color-border)", color: "var(--color-text-secondary)", borderRadius: "6px", padding: "4px 10px", fontSize: "12px", cursor: "pointer" }}>
               Cancel
             </button>
           </div>
@@ -327,105 +290,37 @@ export function ChatPage() {
 
       {/* Plan display */}
       {currentPlan && (
-        <div
-          style={{
-            ...sectionStyle,
-            borderColor: "var(--color-accent)",
-            borderWidth: "2px",
-          }}
-        >
-          <h3
-            style={{
-              fontSize: "14px",
-              fontWeight: 600,
-              marginBottom: "12px",
-              color: "var(--color-accent)",
-            }}
-          >
+        <div style={{ ...sectionStyle, borderColor: "var(--color-accent)", borderWidth: "2px" }}>
+          <h3 style={{ fontSize: "14px", fontWeight: 600, marginBottom: "12px", color: "var(--color-accent)" }}>
             Plan for: {messages.find((m) => m.role === "user")?.content ?? "Task"}
           </h3>
-          <pre
-            style={{
-              background: "var(--color-bg-secondary)",
-              padding: "16px",
-              borderRadius: "6px",
-              fontSize: "13px",
-              lineHeight: "1.5",
-              overflowX: "auto",
-              whiteSpace: "pre-wrap",
-              color: "var(--color-text)",
-              margin: 0,
-              maxHeight: "300px",
-              overflowY: "auto",
-            }}
-          >
+          <pre style={{ background: "var(--color-bg-secondary)", padding: "16px", borderRadius: "6px", fontSize: "13px", lineHeight: "1.5", overflowX: "auto", whiteSpace: "pre-wrap", color: "var(--color-text)", margin: 0, maxHeight: "300px", overflowY: "auto" }}>
             {currentPlan}
           </pre>
           <div style={{ display: "flex", gap: "8px", marginTop: "12px" }}>
-            <button
-              onClick={handleApprovePlan}
-              disabled={loading}
-              style={{
-                padding: "8px 20px",
-                borderRadius: "6px",
-                border: "none",
-                background: loading ? "var(--color-text-secondary)" : "var(--color-success)",
-                color: "#fff",
-                fontSize: "13px",
-                fontWeight: 600,
-                cursor: loading ? "not-allowed" : "pointer",
-              }}
-            >
+            <button onClick={handleApprovePlan} disabled={loading} style={{ padding: "8px 20px", borderRadius: "6px", border: "none", background: loading ? "var(--color-text-secondary)" : "var(--color-success)", color: "#fff", fontSize: "13px", fontWeight: 600, cursor: loading ? "not-allowed" : "pointer" }}>
               {loading ? "Executing..." : "Approve"}
             </button>
-            <button
-              onClick={handleRejectPlan}
-              disabled={loading}
-              style={{
-                padding: "8px 20px",
-                borderRadius: "6px",
-                border: "1px solid var(--color-error)",
-                background: "transparent",
-                color: "var(--color-error)",
-                fontSize: "13px",
-                fontWeight: 600,
-                cursor: loading ? "not-allowed" : "pointer",
-              }}
-            >
+            <button onClick={handleRejectPlan} disabled={loading} style={{ padding: "8px 20px", borderRadius: "6px", border: "1px solid var(--color-error)", background: "transparent", color: "var(--color-error)", fontSize: "13px", fontWeight: 600, cursor: loading ? "not-allowed" : "pointer" }}>
               Reject
             </button>
           </div>
         </div>
       )}
 
-      {/* Error display */}
       {error && (
-        <div
-          style={{
-            ...sectionStyle,
-            borderColor: "var(--color-error)",
-          }}
-        >
+        <div style={{ ...sectionStyle, borderColor: "var(--color-error)" }}>
           <p style={{ color: "var(--color-error)", fontSize: "13px", margin: 0 }}>{error}</p>
         </div>
       )}
 
       {/* Input area */}
       <div style={sectionStyle}>
-        <div style={{ display: "flex", gap: "8px", marginBottom: "12px", alignItems: "center" }}>
-          {/* Plan mode selector */}
+        <div style={{ display: "flex", gap: "8px", marginBottom: "12px", alignItems: "center", flexWrap: "wrap" }}>
           <select
             value={planMode}
             onChange={(e) => setPlanMode(e.target.value as "auto" | "always" | "never")}
-            style={{
-              padding: "6px 10px",
-              borderRadius: "6px",
-              border: "1px solid var(--color-border)",
-              background: "var(--color-input-bg)",
-              color: "var(--color-text)",
-              fontSize: "13px",
-              outline: "none",
-            }}
+            style={{ padding: "6px 10px", borderRadius: "6px", border: "1px solid var(--color-border)", background: "var(--color-input-bg)", color: "var(--color-text)", fontSize: "13px", outline: "none" }}
             aria-label="Plan mode"
           >
             <option value="always">Plan: Always</option>
@@ -433,52 +328,55 @@ export function ChatPage() {
             <option value="never">Plan: Never</option>
           </select>
 
-          {/* Voice button */}
           <button
             onClick={handleVoiceToggle}
-            style={{
-              padding: "6px 12px",
-              borderRadius: "6px",
-              border: "1px solid var(--color-border)",
-              background: isListening ? "color-mix(in srgb, var(--color-error) 20%, transparent)" : "transparent",
-              color: isListening ? "var(--color-error)" : "var(--color-text-secondary)",
-              fontSize: "13px",
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: "4px",
-            }}
+            style={{ padding: "6px 12px", borderRadius: "6px", border: "1px solid var(--color-border)", background: isListening ? "color-mix(in srgb, var(--color-error) 20%, transparent)" : "transparent", color: isListening ? "var(--color-error)" : "var(--color-text-secondary)", fontSize: "13px", cursor: "pointer", display: "flex", alignItems: "center", gap: "4px" }}
             title={isListening ? "Stop listening" : "Voice input"}
           >
             🎤 {isListening ? "Listening..." : "Voice"}
           </button>
 
-          {/* File upload button */}
           <button
             onClick={() => fileInputRef.current?.click()}
-            style={{
-              padding: "6px 12px",
-              borderRadius: "6px",
-              border: "1px solid var(--color-border)",
-              background: "transparent",
-              color: "var(--color-text-secondary)",
-              fontSize: "13px",
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: "4px",
-            }}
-            title="Upload file to workspace"
+            disabled={uploading}
+            style={{ padding: "6px 12px", borderRadius: "6px", border: "1px solid var(--color-border)", background: "transparent", color: "var(--color-text-secondary)", fontSize: "13px", cursor: uploading ? "not-allowed" : "pointer", display: "flex", alignItems: "center", gap: "4px" }}
+            title="Upload file to the active project's workspace"
           >
-            📎 Upload
+            📎 {uploading ? "Uploading…" : "Upload"}
           </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            onChange={handleFileUpload}
-            style={{ display: "none" }}
-          />
+          <input ref={fileInputRef} type="file" onChange={handleFileUpload} style={{ display: "none" }} />
+
+          <button
+            onClick={() => setShowAdvanced((v) => !v)}
+            style={{ padding: "6px 12px", borderRadius: "6px", border: "1px solid var(--color-border)", background: "transparent", color: "var(--color-text-secondary)", fontSize: "13px", cursor: "pointer", marginLeft: "auto" }}
+          >
+            {showAdvanced ? "Hide options ▲" : "Options ▼"}
+          </button>
         </div>
+
+        {showAdvanced && (
+          <div style={{ display: "flex", gap: "16px", alignItems: "center", flexWrap: "wrap", padding: "12px", marginBottom: "12px", background: "var(--color-bg-secondary)", borderRadius: "6px" }}>
+            <label style={checkboxLabel}>
+              <input type="checkbox" checked={leanToken} onChange={(e) => setLeanToken(e.target.checked)} />
+              Lean token mode
+            </label>
+            <label style={checkboxLabel}>
+              <input type="checkbox" checked={isolatedWorkspace} onChange={(e) => setIsolatedWorkspace(e.target.checked)} />
+              Isolated workspace
+            </label>
+            <label style={checkboxLabel}>
+              Max iterations
+              <input
+                type="number"
+                min={1}
+                value={maxIterations}
+                onChange={(e) => setMaxIterations(e.target.value === "" ? "" : parseInt(e.target.value, 10))}
+                placeholder="20"
+                style={{ width: "60px", padding: "4px 6px", borderRadius: "4px", border: "1px solid var(--color-border)", background: "var(--color-input-bg)", color: "var(--color-text)", fontSize: "12px" }}
+              />
+            </label>
+          </div>
+        )}
 
         <div style={{ display: "flex", gap: "8px" }}>
           <textarea
@@ -492,35 +390,13 @@ export function ChatPage() {
             }}
             placeholder="Type your message here..."
             rows={3}
-            style={{
-              flex: 1,
-              padding: "10px 12px",
-              borderRadius: "6px",
-              border: "1px solid var(--color-border)",
-              background: "var(--color-input-bg)",
-              color: "var(--color-text)",
-              fontSize: "14px",
-              fontFamily: "inherit",
-              resize: "none",
-              outline: "none",
-            }}
+            style={{ flex: 1, padding: "10px 12px", borderRadius: "6px", border: "1px solid var(--color-border)", background: "var(--color-input-bg)", color: "var(--color-text)", fontSize: "14px", fontFamily: "inherit", resize: "none", outline: "none" }}
             aria-label="Message input"
           />
           <button
             onClick={handleSend}
             disabled={loading || !input.trim()}
-            style={{
-              padding: "10px 20px",
-              borderRadius: "6px",
-              border: "none",
-              background: loading || !input.trim() ? "var(--color-text-secondary)" : "var(--color-primary)",
-              color: "#fff",
-              fontSize: "14px",
-              fontWeight: 600,
-              cursor: loading || !input.trim() ? "not-allowed" : "pointer",
-              alignSelf: "flex-end",
-              transition: "background 0.15s ease",
-            }}
+            style={{ padding: "10px 20px", borderRadius: "6px", border: "none", background: loading || !input.trim() ? "var(--color-text-secondary)" : "var(--color-primary)", color: "#fff", fontSize: "14px", fontWeight: 600, cursor: loading || !input.trim() ? "not-allowed" : "pointer", alignSelf: "flex-end", transition: "background 0.15s ease" }}
           >
             {loading ? "..." : "Send"}
           </button>
@@ -532,5 +408,3 @@ export function ChatPage() {
     </div>
   );
 }
-
-

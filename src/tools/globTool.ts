@@ -5,3 +5,4 @@ export async function globTool(pattern: string, cwd: string = process.cwd()): Pr
   const ignore = loadIgnoreRules(cwd);
   return fg(pattern, { cwd, ignore, dot: false, onlyFiles: true });
 }
+

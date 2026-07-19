@@ -88,6 +88,57 @@ export interface SkillListEntry {
   composes_with: string[];
 }
 
+export interface Project {
+  id: string;
+  name: string;
+  path: string;
+  active: boolean;
+  includeInLlm: boolean;
+  createdAt: string;
+}
+
+export interface WorkspaceFile {
+  name: string;
+  path: string;
+  size: number;
+  isDir: boolean;
+}
+
+export interface TaskHistoryEntry {
+  id: string;
+  task: string;
+  summary: string;
+  timestamp: string;
+  iterations: number;
+  totalTokens?: number;
+}
+
+export interface UsageInfo {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  reasoningTokens?: number;
+}
+
+/** Mirrors the CLI's flags — see src/cli/index.ts in devnull-core for the source of truth. */
+export interface ChatOptions {
+  planMode?: "auto" | "always" | "never";
+  leanToken?: boolean;
+  isolatedWorkspace?: boolean;
+  maxIterations?: number;
+  projectId?: string;
+}
+
+export interface ChatResult {
+  result: string;
+  iterations: number;
+  plan?: string;
+  sessionId?: string;
+  usage?: UsageInfo;
+  healthScore?: number;
+  limitation?: string;
+}
+
 // ─── HTTP Helpers ───────────────────────────────────────────────────────────
 
 async function request<T>(
@@ -156,19 +207,117 @@ export const api = {
     return request<User>("DELETE", `/users/${id}`);
   },
 
-  /** Send a chat message. */
-  async chat(task: string, planMode?: "auto" | "always" | "never", signal?: AbortSignal): Promise<ApiResponse> {
-    return request("POST", "/chat", { task, planMode }, signal);
+  /** Send a chat message. Accepts the same options the CLI exposes as flags (leanToken,
+   *  isolatedWorkspace, maxIterations, projectId) in addition to planMode. */
+  async chat(task: string, opts: ChatOptions = {}, signal?: AbortSignal): Promise<ApiResponse<ChatResult>> {
+    return request<ChatResult>("POST", "/chat", { task, ...opts }, signal);
   },
 
   /** Generate a plan without executing. */
-  async generatePlan(task: string, planMode?: "auto" | "always" | "never"): Promise<ApiResponse> {
-    return request("POST", "/chat/plan", { task, planMode });
+  async generatePlan(task: string, opts: ChatOptions = {}): Promise<ApiResponse<ChatResult>> {
+    return request<ChatResult>("POST", "/chat/plan", { task, ...opts });
   },
 
   /** Execute an approved plan. */
-  async executePlan(sessionId: string): Promise<ApiResponse> {
-    return request("POST", "/chat/execute", { sessionId });
+  async executePlan(sessionId: string): Promise<ApiResponse<ChatResult>> {
+    return request<ChatResult>("POST", "/chat/execute", { sessionId });
+  },
+
+  // ─── Projects ──────────────────────────────────────────────────────────
+
+  async listProjects(): Promise<ApiResponse<Project[]>> {
+    return request<Project[]>("GET", "/projects");
+  },
+
+  async addProject(name: string, path: string): Promise<ApiResponse<Project> & { created?: boolean }> {
+    return request<Project>("POST", "/projects", { name, path }) as Promise<ApiResponse<Project> & { created?: boolean }>;
+  },
+
+  async updateProject(id: string, updates: { name?: string; path?: string; includeInLlm?: boolean }): Promise<ApiResponse<Project>> {
+    return request<Project>("PUT", `/projects/${id}`, updates);
+  },
+
+  async activateProject(id: string): Promise<ApiResponse<Project>> {
+    return request<Project>("POST", `/projects/${id}/activate`);
+  },
+
+  async deleteProject(id: string): Promise<ApiResponse<{ deleted: boolean }>> {
+    return request("DELETE", `/projects/${id}`);
+  },
+
+  async listProjectFiles(id: string, subPath = ""): Promise<ApiResponse<{ files: WorkspaceFile[]; workspaceRoot: string; path: string }>> {
+    const q = subPath ? `?path=${encodeURIComponent(subPath)}` : "";
+    return request("GET", `/projects/${id}/files${q}`);
+  },
+
+  async deleteProjectFile(id: string, filePath: string): Promise<ApiResponse<{ deleted: boolean }>> {
+    return request("DELETE", `/projects/${id}/files`, { path: filePath });
+  },
+
+  /** Downloads the project's workspace as a zip via an authenticated fetch (a plain <a href>
+   *  wouldn't carry the Authorization header the backend actually requires) and triggers the
+   *  browser's normal save-file flow via a Blob object URL. */
+  async downloadProject(id: string, projectName: string): Promise<{ success: boolean; error?: string }> {
+    const token = getStoredToken();
+    const headers: Record<string, string> = {};
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+
+    const res = await fetch(`${API_BASE}/projects/${id}/download`, { headers });
+    if (!res.ok) {
+      let error = `Download failed (${res.status})`;
+      try {
+        const body = await res.json();
+        if (body?.error) error = body.error;
+      } catch {
+        // response wasn't JSON (e.g. the zip stream itself) — keep the generic message
+      }
+      return { success: false, error };
+    }
+
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${projectName.replace(/[^a-z0-9_-]/gi, "_")}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    return { success: true };
+  },
+
+  async uploadProjectFile(id: string, file: File, subPath = ""): Promise<ApiResponse<{ path: string; size: number }>> {
+    const form = new FormData();
+    form.append("file", file);
+    if (subPath) form.append("path", subPath);
+    const token = getStoredToken();
+    const headers: Record<string, string> = {};
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    const res = await fetch(`${API_BASE}/projects/${id}/upload`, { method: "POST", headers, body: form });
+    return res.json();
+  },
+
+  // ─── Task History ──────────────────────────────────────────────────────
+
+  async getTaskHistory(projectId?: string, limit = 10): Promise<ApiResponse<{ tasks: TaskHistoryEntry[] }>> {
+    const params = new URLSearchParams();
+    if (projectId) params.set("projectId", projectId);
+    params.set("limit", String(limit));
+    return request("GET", `/task-history?${params.toString()}`);
+  },
+
+  // ─── LLM Key ───────────────────────────────────────────────────────────
+
+  async getLlmKeyStatus(): Promise<ApiResponse<{ hasKey: boolean }>> {
+    return request("GET", "/settings/llm-key");
+  },
+
+  async setLlmKey(apiKey: string): Promise<ApiResponse<{ hasKey: boolean }>> {
+    return request("PUT", "/settings/llm-key", { apiKey });
+  },
+
+  async clearLlmKey(): Promise<ApiResponse<{ hasKey: boolean }>> {
+    return request("DELETE", "/settings/llm-key");
   },
 
   /** Get telemetry entries. */
@@ -199,5 +348,4 @@ export const api = {
     return request("POST", "/logout");
   },
 };
-
 

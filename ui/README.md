@@ -41,4 +41,3 @@ The image is a two-stage build: Node compiles the static bundle, then nginx serv
 ## Themes
 
 Nine built-in themes live in `src/themes.ts` as plain color-token objects, applied via CSS custom properties (`src/context/ThemeContext.tsx`). Every page uses `var(--color-*)` tokens rather than hardcoded colors — new pages should follow the same pattern rather than introducing a separate styling approach (see review notes for what happens when that slips: the Projects and Diagnostics pages once used Tailwind utility classes despite Tailwind never being installed in this project).
-

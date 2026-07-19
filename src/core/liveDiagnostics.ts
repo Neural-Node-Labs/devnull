@@ -407,3 +407,4 @@ function renderMarkdown(report: LiveDiagnosticsReport, baseDir: string): string 
   }
   return lines.join("\n");
 }
+

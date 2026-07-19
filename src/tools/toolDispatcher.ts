@@ -1,4 +1,5 @@
 import { ToolCall } from "../core/types.js";
+import { TOOL_SCHEMAS } from "./toolSchemas.js";
 import { globTool } from "./globTool.js";
 import { grepTool } from "./grepTool.js";
 import { readTool } from "./readTool.js";
@@ -11,13 +12,28 @@ import { crawlAndGeneratePlaywrightTest } from "./crawlPlaywrightTool.js";
 import { githubClone, githubFetch, githubPull, githubStatus, githubCommit, githubPush } from "./githubTool.js";
 import { deployWorkspaceViaSsh } from "./dockerDeploySshTool.js";
 import { rebuildIndex, readIndexedFile } from "./indexingTool.js";
-import { crawlSiteMap, formatSiteMap } from "./siteCrawlerTool.js";
+import { readTaskHistory, searchTaskHistory } from "../core/taskHistory.js";
 
 export interface DispatchResult {
   toolCallId: string;
   toolName: string;
   observation: unknown;
   isError: boolean;
+}
+
+/**
+ * Checks the call's arguments against that tool's declared `required` fields in
+ * TOOL_SCHEMAS — reused rather than duplicated, so this can't drift out of sync with the
+ * schemas the model actually sees. Catches cases like a `run_command_tool` call with `{}`
+ * (missing `command`) before it reaches the tool implementation, where it would otherwise
+ * crash with a raw, unhelpful runtime error (e.g. Node's "The \"file\" argument must be of
+ * type string. Received undefined" from spawn()) that doesn't tell the model what it did wrong
+ * or that it should retry with the missing field.
+ */
+function findMissingRequiredArgs(name: string, args: Record<string, unknown>): string[] {
+  const schema = TOOL_SCHEMAS.find((s) => s.function.name === name);
+  const required = schema?.function.parameters.required ?? [];
+  return required.filter((key) => args[key] === undefined || args[key] === null || args[key] === "");
 }
 
 /**
@@ -32,6 +48,19 @@ export async function dispatchToolCall(call: ToolCall, cwd: string = process.cwd
     args = JSON.parse(call.function.arguments || "{}");
   } catch (err) {
     return { toolCallId: call.id, toolName: name, observation: { error: `Invalid JSON arguments: ${err}` }, isError: true };
+  }
+
+  const missing = findMissingRequiredArgs(name, args);
+  if (missing.length > 0) {
+    return {
+      toolCallId: call.id,
+      toolName: name,
+      observation: {
+        error: `Missing required argument(s) for ${name}: ${missing.join(", ")}. The tool was not run — retry the call with all required fields filled in.`,
+        providedArgs: args,
+      },
+      isError: true,
+    };
   }
 
   try {
@@ -49,6 +78,14 @@ export async function dispatchToolCall(call: ToolCall, cwd: string = process.cwd
         return { toolCallId: call.id, toolName: name, observation: { content: result }, isError: false };
       }
       case "write_edit_tool": {
+        if (args.mode === "edit" && (args.oldStr === undefined || args.newStr === undefined)) {
+          return {
+            toolCallId: call.id,
+            toolName: name,
+            observation: { error: "write_edit_tool with mode='edit' requires both 'oldStr' and 'newStr'. The tool was not run.", providedArgs: args },
+            isError: true,
+          };
+        }
         const result =
           args.mode === "write"
             ? writeFile(args.filePath, args.content ?? "", cwd)
@@ -157,19 +194,19 @@ export async function dispatchToolCall(call: ToolCall, cwd: string = process.cwd
           return { toolCallId: call.id, toolName: name, observation: { error: `Unknown indexing_tool action: ${args.action}. Use 'rebuild' or 'read'.` }, isError: true };
         }
       }
-      case "crawl_site_mapper_tool": {
-        const result = await crawlSiteMap(args.url, {
-          maxPages: args.maxPages ?? 50,
-          maxDepth: args.maxDepth ?? 5,
-          sameDomain: args.sameDomain ?? true,
-        });
-        const formatted = formatSiteMap(result);
-        return {
-          toolCallId: call.id,
-          toolName: name,
-          observation: { siteMap: result, formatted },
-          isError: false,
-        };
+      case "task_history_tool": {
+        if (args.action === "recent") {
+          const tasks = readTaskHistory(cwd, args.limit ?? 5);
+          return { toolCallId: call.id, toolName: name, observation: { tasks, count: tasks.length }, isError: false };
+        } else if (args.action === "search") {
+          if (!args.query) {
+            return { toolCallId: call.id, toolName: name, observation: { error: "query is required when action='search'" }, isError: true };
+          }
+          const tasks = searchTaskHistory(cwd, args.query, args.limit ?? 5);
+          return { toolCallId: call.id, toolName: name, observation: { tasks, count: tasks.length }, isError: false };
+        } else {
+          return { toolCallId: call.id, toolName: name, observation: { error: `Unknown task_history_tool action: ${args.action}. Use 'recent' or 'search'.` }, isError: true };
+        }
       }
       default:
         return { toolCallId: call.id, toolName: name, observation: { error: `Unknown tool: ${name}` }, isError: true };
@@ -179,3 +216,4 @@ export async function dispatchToolCall(call: ToolCall, cwd: string = process.cwd
     return { toolCallId: call.id, toolName: name, observation: { error: message }, isError: true };
   }
 }
+

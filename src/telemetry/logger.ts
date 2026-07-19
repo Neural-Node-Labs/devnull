@@ -43,3 +43,4 @@ export class NullTelemetry implements TelemetryInterface {
   async logLlmCall(): Promise<void> {}
   async logError(): Promise<void> {}
 }
+

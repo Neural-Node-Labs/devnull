@@ -14,11 +14,21 @@ const ANSI = {
   reset: "\x1b[0m",
   dim: "\x1b[2m",
   bold: "\x1b[1m",
+  italic: "\x1b[3m",
   cyan: "\x1b[36m",
+  brightCyan: "\x1b[96m",
   magenta: "\x1b[35m",
+  brightMagenta: "\x1b[95m",
   green: "\x1b[32m",
+  brightGreen: "\x1b[92m",
   red: "\x1b[31m",
+  brightRed: "\x1b[91m",
   yellow: "\x1b[33m",
+  brightYellow: "\x1b[93m",
+  blue: "\x1b[34m",
+  brightBlue: "\x1b[94m",
+  bgMagenta: "\x1b[45m",
+  white: "\x1b[97m",
 };
 
 function color(text: string, code: string): string {
@@ -73,26 +83,52 @@ function prefix(indent: number): string {
  * Prints the model's reasoning/thought for this step. `reasoningContent` is DeepSeek's
  * thinking-mode chain-of-thought (see deepseekClient.ts); falls back to `content` when
  * thinking mode is off or the model didn't return one, so there's always something shown.
+ *
+ * Deliberately the most visually prominent line in the loop (highlighted label + bright body,
+ * not dimmed) — this is the one line a human skimming a long-running task actually wants to
+ * catch at a glance, so it shouldn't look the same weight as everything else.
  */
 export function reportThought(text: string | undefined, indent = 0): void {
   if (!text || !text.trim()) return;
-  const label = color("💭 Thought", ANSI.magenta);
-  const body = text.trim();
-  console.log(`${prefix(indent)}${label}${isTTY ? "" : ":"} ${color(truncate(body, 500), ANSI.dim)}`);
+  const label = isTTY
+    ? `${ANSI.bgMagenta}${ANSI.white}${ANSI.bold} THOUGHT ${ANSI.reset}`
+    : "[THOUGHT]";
+  const body = truncate(text.trim(), 500);
+  console.log(`${prefix(indent)}${label} ${color(body, isTTY ? ANSI.brightMagenta : "")}`);
 }
 
 export function reportAction(tool: string, input: unknown, indent = 0): void {
-  const label = color("🔧 Action", ANSI.cyan);
-  console.log(`${prefix(indent)}${label}${isTTY ? "" : ":"} ${color(tool, ANSI.bold)} ${color(summarizeInput(input), ANSI.dim)}`);
+  const label = color("🔧 ACTION", ANSI.brightCyan + ANSI.bold);
+  console.log(`${prefix(indent)}${label} ${color(tool, ANSI.brightCyan)} ${color(summarizeInput(input), ANSI.dim)}`);
 }
 
-export function reportObservation(observation: unknown, isError: boolean, indent = 0): void {
-  const label = isError ? color("✖ Observation", ANSI.red) : color("👁 Observation", ANSI.green);
-  console.log(`${prefix(indent)}${label}${isTTY ? "" : ":"} ${color(summarizeInput(observation), ANSI.dim)}`);
+export function reportObservation(observation: unknown, isError: boolean, indent = 0, score?: number): void {
+  const label = isError
+    ? color("✖ OBSERVATION", ANSI.brightRed + ANSI.bold)
+    : color("👁 OBSERVATION", ANSI.brightGreen + ANSI.bold);
+  const bodyColor = isError ? ANSI.brightRed : ANSI.dim;
+  const scoreBit = score === undefined ? "" : ` ${scoreBadge(score)}`;
+  console.log(`${prefix(indent)}${label} ${color(summarizeInput(observation), bodyColor)}${scoreBit}`);
+}
+
+function scoreBadge(score: number): string {
+  const code = score >= 70 ? ANSI.green : score >= 40 ? ANSI.yellow : ANSI.brightRed;
+  return color(`[health ${score}]`, code);
+}
+
+/** Printed once when the rolling health average drops low enough to trigger a self-correction
+ *  nudge — see orchestrator.ts. Deliberately loud (not dim) since it's meant to catch the eye. */
+export function reportHealthWarning(rollingAvg: number, indent = 0): void {
+  const label = isTTY
+    ? `${ANSI.brightRed}${ANSI.bold}⚠ SELF-CHECK${ANSI.reset}`
+    : "[SELF-CHECK]";
+  console.log(
+    `${prefix(indent)}${label} ${color(`rolling health ${rollingAvg}/100 — nudging the agent to reconsider its approach`, ANSI.brightRed)}`
+  );
 }
 
 export function reportSubagentStart(task: string, indent = 0): void {
-  console.log(`${prefix(indent)}${color("🧩 Subagent", ANSI.yellow)} ${color(truncate(task, 200), ANSI.dim)}`);
+  console.log(`${prefix(indent)}${color("🧩 SUBAGENT", ANSI.brightBlue + ANSI.bold)} ${color(truncate(task, 200), ANSI.brightBlue)}`);
 }
 
 /** Per-call token usage, printed right after the Thought for that same LLM call. */

@@ -22,6 +22,9 @@ export interface ReActStep {
   thought: string;
   action?: { tool: string; input: unknown };
   observation?: unknown;
+  /** Heuristic 0-100 self-healing score for this step (see src/core/stepScorer.ts). Undefined
+   *  for steps that don't go through a tool call (e.g. the iteration-limit check entry). */
+  score?: number;
 }
 
 export interface TelemetryInterface {

@@ -62,3 +62,4 @@ export function buildProtocolPrompt(cwd: string = process.cwd()): string {
   }
   return out;
 }
+

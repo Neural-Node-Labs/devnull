@@ -25,12 +25,20 @@ export function SettingsPage() {
 
   // LLM key state
   const [llmKey, setLlmKey] = useState("");
+  const [llmKeyStatus, setLlmKeyStatus] = useState<boolean | null>(null);
+  const [llmKeyBusy, setLlmKeyBusy] = useState(false);
 
   useEffect(() => {
     if (isAdmin) {
       loadUsers();
     }
   }, [isAdmin]);
+
+  useEffect(() => {
+    api.getLlmKeyStatus().then((res) => {
+      if (res.success && res.data) setLlmKeyStatus(res.data.hasKey);
+    });
+  }, []);
 
   const loadUsers = async () => {
     try {
@@ -354,49 +362,17 @@ export function SettingsPage() {
       {/* ─── Change Password ────────────────────────────────────────────── */}
       <div style={sectionStyle}>
         <h2 style={sectionTitle}>Change Password</h2>
-        <p style={{ color: "var(--color-text-secondary)", fontSize: "13px", marginBottom: "12px" }}>
-          Update your account password.
+        <p style={{ color: "var(--color-warning, #f59e0b)", fontSize: "13px", marginBottom: "12px" }}>
+          ⚠ Not yet available. This server currently authenticates against a single admin
+          credential set via the <code>ADMIN_PASSWORD</code> environment variable — there's no
+          per-user password storage on the backend yet. Changing it here would silently do
+          nothing, so this form is disabled rather than pretending it worked.
         </p>
-        <div style={{ display: "flex", flexDirection: "column", gap: "12px", maxWidth: "400px" }}>
-          <input
-            type="password"
-            placeholder="Current password"
-            value={currentPassword}
-            onChange={(e) => setCurrentPassword(e.target.value)}
-            style={inputStyle}
-            aria-label="Current password"
-          />
-          <input
-            type="password"
-            placeholder="New password"
-            value={newPassword1}
-            onChange={(e) => setNewPassword1(e.target.value)}
-            style={inputStyle}
-            aria-label="New password"
-          />
-          <input
-            type="password"
-            placeholder="Confirm new password"
-            value={newPassword2}
-            onChange={(e) => setNewPassword2(e.target.value)}
-            style={inputStyle}
-            aria-label="Confirm new password"
-          />
-          <button
-            onClick={() => {
-              if (!currentPassword || !newPassword1 || !newPassword2) {
-                showMessage("error", "All password fields are required");
-              } else if (newPassword1 !== newPassword2) {
-                showMessage("error", "New passwords do not match");
-              } else {
-                showMessage("success", "Password changed successfully");
-                setCurrentPassword("");
-                setNewPassword1("");
-                setNewPassword2("");
-              }
-            }}
-            style={{ ...btnStyle("primary"), alignSelf: "flex-start" }}
-          >
+        <div style={{ display: "flex", flexDirection: "column", gap: "12px", maxWidth: "400px", opacity: 0.5 }}>
+          <input type="password" placeholder="Current password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} style={inputStyle} aria-label="Current password" disabled />
+          <input type="password" placeholder="New password" value={newPassword1} onChange={(e) => setNewPassword1(e.target.value)} style={inputStyle} aria-label="New password" disabled />
+          <input type="password" placeholder="Confirm new password" value={newPassword2} onChange={(e) => setNewPassword2(e.target.value)} style={inputStyle} aria-label="Confirm new password" disabled />
+          <button disabled style={{ ...btnStyle("primary"), alignSelf: "flex-start", opacity: 0.5, cursor: "not-allowed" }}>
             Update Password
           </button>
         </div>
@@ -406,32 +382,66 @@ export function SettingsPage() {
       <div style={sectionStyle}>
         <h2 style={sectionTitle}>LLM Key Management</h2>
         <p style={{ color: "var(--color-text-secondary)", fontSize: "13px", marginBottom: "12px" }}>
-          Configure your API keys for LLM providers.
+          {llmKeyStatus === null
+            ? "Checking current key status…"
+            : llmKeyStatus
+            ? "A key is currently configured on the server."
+            : "No key is currently configured — the server falls back to the DEEPSEEK_API_KEY environment variable, if set."}
         </p>
         <div style={{ display: "flex", flexDirection: "column", gap: "12px", maxWidth: "400px" }}>
-          <input
-            type="password"
-            placeholder="API Key"
-            value={llmKey}
-            onChange={(e) => setLlmKey(e.target.value)}
-            style={inputStyle}
-          />
-          <button
-            onClick={() => {
-              if (llmKey.trim()) {
-                showMessage("success", "API key saved");
-              } else {
-                showMessage("error", "Please enter an API key");
-              }
-            }}
-            style={{ ...btnStyle("primary"), alignSelf: "flex-start" }}
-          >
-            Save Key
-          </button>
+          <input type="password" placeholder="API Key" value={llmKey} onChange={(e) => setLlmKey(e.target.value)} style={inputStyle} />
+          <div style={{ display: "flex", gap: "8px" }}>
+            <button
+              onClick={async () => {
+                if (!llmKey.trim()) {
+                  showMessage("error", "Please enter an API key");
+                  return;
+                }
+                setLlmKeyBusy(true);
+                try {
+                  const res = await api.setLlmKey(llmKey.trim());
+                  if (res.success) {
+                    showMessage("success", "API key saved");
+                    setLlmKeyStatus(true);
+                    setLlmKey("");
+                  } else {
+                    showMessage("error", res.error ?? "Failed to save key");
+                  }
+                } catch (err) {
+                  showMessage("error", err instanceof Error ? err.message : "Failed to save key");
+                } finally {
+                  setLlmKeyBusy(false);
+                }
+              }}
+              disabled={llmKeyBusy}
+              style={{ ...btnStyle("primary"), opacity: llmKeyBusy ? 0.6 : 1 }}
+            >
+              {llmKeyBusy ? "Saving…" : "Save Key"}
+            </button>
+            {llmKeyStatus && (
+              <button
+                onClick={async () => {
+                  setLlmKeyBusy(true);
+                  try {
+                    const res = await api.clearLlmKey();
+                    if (res.success) {
+                      showMessage("success", "API key cleared");
+                      setLlmKeyStatus(false);
+                    }
+                  } finally {
+                    setLlmKeyBusy(false);
+                  }
+                }}
+                disabled={llmKeyBusy}
+                style={btnStyle("ghost")}
+              >
+                Clear
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>
   );
 }
-
 

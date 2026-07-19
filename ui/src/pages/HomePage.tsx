@@ -2,6 +2,8 @@ import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api/client";
 import { useAuth } from "../context/AuthContext";
+// Import your logo image asset here (adjust path based on your folder structure)
+import devnullLogo from "../assets/devnull-logo-x.png";
 
 interface HealthInfo {
   version: string;
@@ -37,18 +39,35 @@ export function HomePage() {
     { title: "Telemetry", desc: "View agent logs and telemetry data", link: "/telemetry", icon: "📊" },
     { title: "Diagnostics", desc: "Run health checks and view loaded skills", link: "/diagnostics", icon: "🩺" },
     { title: "Settings", desc: "Manage preferences, themes, and users", link: "/settings", icon: "⚙️" },
-    ...(isAdmin ? [{ title: "Admin", desc: "User management and system admin", link: "/admin", icon: "🔒" }] : []),
+    ...(isAdmin ? [{ title: "Admin", desc: "User management and system admin", link: "/admin", icon: "👑" }] : []),
   ];
 
   return (
     <div>
-      <div style={{ marginBottom: "32px" }}>
-        <h1 style={{ fontSize: "28px", fontWeight: 700, marginBottom: "8px" }}>
-          Welcome, {user?.username}
-        </h1>
-        <p style={{ color: "var(--color-text-secondary)", fontSize: "15px" }}>
-          devnull agent dashboard
-        </p>
+      {/* Welcome Header Section with Image Background */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          marginBottom: "32px",
+          // Blends the X-Men logo as a background image with a dark gradient mask for text legibility
+          backgroundImage: `linear-gradient(90deg, rgba(11, 6, 22, 0.9) 30%, rgba(147, 51, 234, 0.2) 100%), url(${devnullLogo})`,
+          backgroundSize: "cover",
+          backgroundPosition: "center",
+          padding: "40px 32px",
+          borderRadius: "12px",
+          border: "1px solid var(--color-border)",
+          boxShadow: "inset 0 0 20px rgba(0, 0, 0, 0.6)"
+        }}
+      >
+        <div>
+          <h1 style={{ fontSize: "32px", fontWeight: 800, marginBottom: "8px", margin: 0, textShadow: "0 2px 4px rgba(0,0,0,0.8)" }}>
+            Welcome, {user?.username}
+          </h1>
+          <p style={{ color: "var(--color-text-secondary)", fontSize: "16px", margin: "6px 0 0 0", textShadow: "0 1px 3px rgba(0,0,0,0.8)" }}>
+            devnull agent dashboard — Mutant Protocol Active
+          </p>
+        </div>
       </div>
 
       {health && (
@@ -71,8 +90,8 @@ export function HomePage() {
           display: "grid",
           gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
           gap: "16px",
-        }}
-      >
+         }}
+       >
         {cards.map((card) => (
           <Link
             key={card.link}
@@ -137,5 +156,3 @@ function InfoBadge({ label, value, color }: { label: string; value: string; colo
     </div>
   );
 }
-
-

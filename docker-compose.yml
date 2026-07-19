@@ -52,8 +52,8 @@ services:
     #   docker compose run --rm api --task "fix the bug"
     #   docker compose run --rm api --chat
     # ------------------------------------------------------------------
-    profiles:
-      - serve
+#    profiles:
+#      - serve
 
     # Start the API server (serve profile)
     command:
@@ -106,6 +106,6 @@ services:
     # Profiles:
     #   serve     — starts the UI alongside the API
     # ------------------------------------------------------------------
-    profiles:
-      - serve
+#    profiles:
+#      - serve
 

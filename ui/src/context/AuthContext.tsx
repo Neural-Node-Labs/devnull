@@ -78,4 +78,3 @@ export function useAuth(): AuthContextType {
   return useContext(AuthContext);
 }
 
-

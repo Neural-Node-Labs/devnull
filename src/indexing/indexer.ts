@@ -104,3 +104,4 @@ function hashContent(content: string): string {
   }
   return `v${(hash >>> 0).toString(16)}`;
 }
+

@@ -27,3 +27,4 @@ export async function rebuildIndex(cwd: string = process.cwd()): Promise<Indexin
 export function readIndexedFile(filepath: string, cwd: string = process.cwd()): string | undefined {
   return readFromIndex(filepath, cwd);
 }
+
