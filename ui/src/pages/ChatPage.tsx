@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api, ChatOptions } from "../api/client";
 
 interface ChatMessage {
@@ -9,28 +10,117 @@ interface ChatMessage {
   healthScore?: number;
 }
 
+const CHAT_STORAGE_KEY = "devnull_chat_state";
+
+interface PersistedChatState {
+  messages: ChatMessage[];
+  input: string;
+  planMode: "auto" | "always" | "never";
+  leanToken: boolean;
+  isolatedWorkspace: boolean;
+  maxIterations: number | "";
+  showAdvanced: boolean;
+  currentPlan: string | null;
+  sessionId: string | null;
+  lastTaskText: string;
+}
+
+function saveChatState(state: Partial<PersistedChatState>): void {
+  try {
+    const existing = loadChatState();
+    const merged = { ...existing, ...state };
+    sessionStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(merged));
+  } catch {
+    // sessionStorage may be full or unavailable — silently ignore
+  }
+}
+
+function loadChatState(): PersistedChatState | null {
+  try {
+    const raw = sessionStorage.getItem(CHAT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    // Rehydrate Date objects in messages
+    if (parsed.messages) {
+      parsed.messages = parsed.messages.map((m: any) => ({
+        ...m,
+        timestamp: new Date(m.timestamp),
+      }));
+    }
+    return parsed as PersistedChatState;
+  } catch {
+    return null;
+  }
+}
+
+function clearChatState(): void {
+  try {
+    sessionStorage.removeItem(CHAT_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}
+
 export function ChatPage() {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [input, setInput] = useState("");
-  const [planMode, setPlanMode] = useState<"auto" | "always" | "never">("always");
-  const [leanToken, setLeanToken] = useState(false);
-  const [isolatedWorkspace, setIsolatedWorkspace] = useState(false);
-  const [maxIterations, setMaxIterations] = useState<number | "">("");
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [searchParams] = useSearchParams();
+  const savedState = loadChatState();
+
+  // If there's a ?task= query param (from PlansPage "Continue/Validate" button), use it as
+  // the initial input and clear the URL so a refresh doesn't re-trigger it.
+  const urlTask = searchParams.get("task");
+  const initialInput = urlTask ?? savedState?.input ?? "";
+
+  const [messages, setMessages] = useState<ChatMessage[]>(savedState?.messages ?? []);
+  const [input, setInput] = useState(initialInput);
+  const [planMode, setPlanMode] = useState<"auto" | "always" | "never">(savedState?.planMode ?? "always");
+  const [leanToken, setLeanToken] = useState(savedState?.leanToken ?? false);
+  const [isolatedWorkspace, setIsolatedWorkspace] = useState(savedState?.isolatedWorkspace ?? false);
+  const [maxIterations, setMaxIterations] = useState<number | "">(savedState?.maxIterations ?? "");
+  const [showAdvanced, setShowAdvanced] = useState(savedState?.showAdvanced ?? false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [currentPlan, setCurrentPlan] = useState<string | null>(null);
-  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [currentPlan, setCurrentPlan] = useState<string | null>(savedState?.currentPlan ?? null);
+  const [sessionId, setSessionId] = useState<string | null>(savedState?.sessionId ?? null);
   const [isListening, setIsListening] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [lastTaskText, setLastTaskText] = useState<string>(savedState?.lastTaskText ?? "");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const recognitionRef = useRef<any>(null);
 
+  // Persist state changes to sessionStorage
+  useEffect(() => {
+    saveChatState({
+      messages,
+      input,
+      planMode,
+      leanToken,
+      isolatedWorkspace,
+      maxIterations,
+      showAdvanced,
+      currentPlan,
+      sessionId,
+      lastTaskText,
+    });
+  }, [messages, input, planMode, leanToken, isolatedWorkspace, maxIterations, showAdvanced, currentPlan, sessionId, lastTaskText]);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, loading]);
+
+  // Auto-send if a task was passed via URL (from PlansPage "Continue/Validate" button)
+  const autoSentRef = useRef(false);
+  useEffect(() => {
+    if (urlTask && !autoSentRef.current && messages.length === 0) {
+      autoSentRef.current = true;
+      // Small delay to let the component fully render before sending
+      const timer = setTimeout(() => {
+        handleSend();
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [urlTask]);
 
   const buildOptions = (): ChatOptions => {
     const opts: ChatOptions = { planMode };
@@ -47,6 +137,8 @@ export function ChatPage() {
     setError(null);
     setCurrentPlan(null);
     setSessionId(null);
+    setLastTaskText("");
+    clearChatState();
   };
 
   const handleSend = async () => {
@@ -59,6 +151,7 @@ export function ChatPage() {
     setError(null);
     setCurrentPlan(null);
     setSessionId(null);
+    setLastTaskText(userMessage.content);
 
     try {
       const controller = new AbortController();
@@ -145,6 +238,52 @@ export function ChatPage() {
     setMessages((prev) => [...prev, { role: "system", content: "❌ Plan rejected", timestamp: new Date() }]);
     setCurrentPlan(null);
     setSessionId(null);
+  };
+
+  /** Re-send the last task with continueOnLimit: true so the orchestrator auto-continues
+   *  past the iteration limit instead of stopping. The user clicks this when they see a
+   *  limitation message ("The task did not finish within the iteration limit.") and want
+   *  the agent to keep going. */
+  const handleContinue = async () => {
+    if (!lastTaskText || loading) return;
+
+    setMessages((prev) => [...prev, { role: "system", content: "⏩ Continuing task with extended iteration limit...", timestamp: new Date() }]);
+    setLoading(true);
+    setError(null);
+
+    try {
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+      const opts: ChatOptions = { ...buildOptions(), continueOnLimit: true };
+      const res = await api.chat(lastTaskText, opts, controller.signal);
+
+      if (res.success && res.data) {
+        const data = res.data;
+        if (data.result) {
+          setMessages((prev) => [
+            ...prev,
+            { role: "assistant", content: data.result, timestamp: new Date(), usage: data.usage, healthScore: data.healthScore },
+          ]);
+        }
+        if (data.limitation) {
+          setMessages((prev) => [...prev, { role: "limitation", content: data.limitation!, timestamp: new Date() }]);
+        }
+      } else {
+        setError(res.error ?? "Request failed");
+        setMessages((prev) => [...prev, { role: "system", content: `❌ Error: ${res.error ?? "Request failed"}`, timestamp: new Date() }]);
+      }
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        setMessages((prev) => [...prev, { role: "system", content: "⏹️ Request cancelled", timestamp: new Date() }]);
+      } else {
+        const msg = err instanceof Error ? err.message : "An error occurred";
+        setError(msg);
+        setMessages((prev) => [...prev, { role: "system", content: `❌ Error: ${msg}`, timestamp: new Date() }]);
+      }
+    } finally {
+      abortControllerRef.current = null;
+      setLoading(false);
+    }
   };
 
   // Real Web Speech API integration — transcribes into the input box. No fake "listening..."
@@ -266,6 +405,17 @@ export function ChatPage() {
                 {msg.role === "user" ? "You" : msg.role === "assistant" ? "devnull" : msg.role === "limitation" ? "⚠ Limitation" : "System"}
               </span>
               <p style={{ margin: 0, fontSize: "14px", lineHeight: "1.5", whiteSpace: "pre-wrap" }}>{msg.content}</p>
+              {msg.role === "limitation" && lastTaskText && (
+                <div style={{ marginTop: "10px", display: "flex", gap: "8px" }}>
+                  <button
+                    onClick={handleContinue}
+                    disabled={loading}
+                    style={{ padding: "6px 16px", borderRadius: "6px", border: "none", background: loading ? "var(--color-text-secondary)" : "var(--color-warning, #f59e0b)", color: "#fff", fontSize: "12px", fontWeight: 600, cursor: loading ? "not-allowed" : "pointer" }}
+                  >
+                    {loading ? "Continuing..." : "▶ Continue"}
+                  </button>
+                </div>
+              )}
               {(msg.usage || msg.healthScore !== undefined) && (
                 <p style={{ margin: "8px 0 0", fontSize: "10px", color: "var(--color-text-secondary)", borderTop: "1px solid var(--color-border)", paddingTop: "6px" }}>
                   {msg.usage && `🪙 ${msg.usage.totalTokens.toLocaleString()} tokens`}

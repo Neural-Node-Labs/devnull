@@ -127,7 +127,7 @@ export function createRouter(): Router {
 
   // ─── Chat / Task Execution ─────────────────────────────────────────────
   router.post("/chat", async (req: Request, res: Response) => {
-    const { task, planMode, leanToken, projectId, maxIterations, isolatedWorkspace } = req.body as ChatRequest;
+    const { task, planMode, leanToken, projectId, maxIterations, isolatedWorkspace, continueOnLimit } = req.body as ChatRequest;
 
     if (!task || typeof task !== "string" || task.trim().length === 0) {
       const body: ApiResponse = { success: false, error: "Missing or empty 'task' field" };
@@ -149,6 +149,8 @@ export function createRouter(): Router {
     // and the plan is returned in the response. Iteration-limit hits stop and report rather
     // than auto-continuing forever (the CLI's default) — an API caller has no way to answer an
     // interactive "continue?" prompt, so silently looping is the wrong default here.
+    // When continueOnLimit is true (UI's "Continue" button), the orchestrator auto-continues
+    // past the iteration limit instead of stopping.
     const opts: OrchestratorOptions = {
       cwd,
       interactive: false,
@@ -158,6 +160,7 @@ export function createRouter(): Router {
     if (leanToken) opts.leanToken = true;
     if (maxIterations) opts.maxIterations = maxIterations;
     if (isolatedWorkspace) opts.isolatedWorkspace = true;
+    if (continueOnLimit) opts.continueOnLimit = true;
 
     const orchestrator = new ReActOrchestrator(llm, telemetry, opts);
 
@@ -183,6 +186,7 @@ export function createRouter(): Router {
           projectId,
           maxIterations,
           isolatedWorkspace: isolatedWorkspace ?? false,
+          continueOnLimit: continueOnLimit ?? false,
           createdAt: Date.now(),
         });
       }
@@ -224,13 +228,14 @@ export function createRouter(): Router {
     projectId?: string;
     maxIterations?: number;
     isolatedWorkspace: boolean;
+    continueOnLimit?: boolean;
     createdAt: number;
   }
   const planSessions = new Map<string, PlanSession>();
 
   // ─── Plan Generation (no execution) ────────────────────────────────────
   router.post("/chat/plan", async (req: Request, res: Response) => {
-    const { task, planMode, leanToken, projectId, maxIterations, isolatedWorkspace } = req.body as PlanRequest;
+    const { task, planMode, leanToken, projectId, maxIterations, isolatedWorkspace, continueOnLimit } = req.body as PlanRequest;
 
     if (!task || typeof task !== "string" || task.trim().length === 0) {
       const body: ApiResponse = { success: false, error: "Missing or empty 'task' field" };
@@ -265,6 +270,7 @@ export function createRouter(): Router {
         projectId,
         maxIterations,
         isolatedWorkspace: isolatedWorkspace ?? false,
+        continueOnLimit: continueOnLimit ?? false,
         createdAt: Date.now(),
       });
 
@@ -318,6 +324,7 @@ export function createRouter(): Router {
     if (session.leanToken) opts.leanToken = true;
     if (session.maxIterations) opts.maxIterations = session.maxIterations;
     if (session.isolatedWorkspace) opts.isolatedWorkspace = true;
+    if (session.continueOnLimit) opts.continueOnLimit = true;
     const orchestrator = new ReActOrchestrator(llm, telemetry, opts);
 
     try {

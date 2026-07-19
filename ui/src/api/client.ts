@@ -127,6 +127,9 @@ export interface ChatOptions {
   isolatedWorkspace?: boolean;
   maxIterations?: number;
   projectId?: string;
+  /** When true, the orchestrator auto-continues past the iteration limit instead of stopping.
+   *  Used by the UI's "Continue" button when a limitation message is shown. */
+  continueOnLimit?: boolean;
 }
 
 export interface ChatResult {

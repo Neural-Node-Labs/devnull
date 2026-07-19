@@ -1,40 +1,55 @@
-# Task: Test Plans UI with Playwright
+# Plan: fix this the chat page data lost after movinig to other page going back chat is empty 2. In Plan page add a botton to continue/validate the plan.
 
-## Plan
-1. ✅ Investigate the workspace — understand the UI, API, and Docker setup
-2. ✅ Check the PlansPage component, API routes, and PlanStore
-3. ✅ Identify root cause of "plan not showing" — no PostgreSQL service
-4. ✅ Write Playwright test for the Plans page
-5. ✅ Fix UI container health check (IPv6 → IPv4)
-6. ✅ Run tests and verify everything works
+## Plan: Fix Chat Data Loss & Add Plan Validation Button
+
+- [ ] **RCA: Investigate chat data persistence** — Trace the chat state management in the UI. Check if chat messages are stored in React state only (lost on navigation) vs. localStorage/sessionStorage. Identify the exact mechanism causing data loss on page navigation and back.
+
+- [ ] **Implement chat persistence** — Store chat messages in `sessionStorage` (survives SPA navigation but clears on tab close) or `localStorage` (persists across sessions). Update the chat component to save/restore messages on mount/unmount. Ensure the restore doesn't break the streaming/append flow.
+
+- [ ] **Add "Continue/Validate Plan" button to Plan page** — Locate the Plan page component. Add a button that re-sends the current plan to the API for validation/continuation. Wire it to the existing `/api/v1/chat/plan` or `/api/v1/chat/execute` endpoint with the plan context.
+
+- [ ] **Verify both fixes** — Navigate away from chat and back; confirm messages are restored. Click the new Plan button; confirm it triggers the expected API call and displays the result.
 
 ## Review
+Good. Now let me write a summary of what was done.
 
-### What was tested
-- **Plans page navigation** — clicking "Plans" in the navbar navigates to `/plans`
-- **Empty state** — when no plans exist, shows "No plans yet" message
-- **Plan creation via API** — POST `/api/v1/plans` returns error when no PostgreSQL
-- **Refresh button** — clicking Refresh re-fetches plans
-- **Plan detail page** — navigating to `/plans/:id` for nonexistent plan shows back button
+---
 
-### Root cause of "plan not showing"
-The Plans page works correctly. The issue is that **no PostgreSQL service is configured** in `docker-compose.yml`. The `PlanStore` requires `DATABASE_URL` to be set. Without it:
-- `listPlans()` returns an empty array
-- `savePlan()` throws an error
-- The UI correctly shows "No plans yet"
+## ✅ Summary of Changes
 
-### What was fixed
-1. **UI health check** — Changed `http://localhost:80/` to `http://127.0.0.1:80/` in `docker-compose.yml` because `wget` resolves `localhost` to IPv6 `[::1]` but nginx only listens on IPv4 `0.0.0.0:80`
+### Issue 1: Chat data lost after navigating away and back
 
-### Test results
-```
-5 passed (2.1s)
-  ✓ navigates to plans page via navbar
-  ✓ shows empty state when no plans exist
-  ✓ shows plans list when plans exist
-  ✓ refresh button works
-  ✓ plan detail page shows error for nonexistent plan
-```
+**Root cause:** The `ChatPage` component uses React `useState` for all its state (messages, input, plan, sessionId, etc.). When the user navigates to another page and comes back, React unmounts and remounts the component, losing all state.
 
-### Next steps (if plans should be persisted)
-Add a PostgreSQL service to `docker-compose.yml` and set `DATABASE_URL` environment variable on the API service.
+**Fix:** Persist the chat state in `sessionStorage` so it survives navigation within the same browser tab.
+
+**Files changed: `ui/src/pages/ChatPage.tsx`**
+
+1. **Added `CHAT_STORAGE_KEY`, `PersistedChatState` interface, and helper functions** (`saveChatState`, `loadChatState`, `clearChatState`) — serialize/deserialize the chat state to/from `sessionStorage`.
+
+2. **Initialized all state from saved state** — on mount, `loadChatState()` is called and its values are used as initial state defaults.
+
+3. **Added a persistence `useEffect`** — watches all state variables and writes them to `sessionStorage` on every change.
+
+4. **`handleNewChat` now calls `clearChatState()`** — so starting a new chat properly clears the persisted state.
+
+5. **Added `useSearchParams` import** — to support the second feature (reading `?task=` from URL).
+
+### Issue 2: Plan page needs a "Continue/Validate" button
+
+**Files changed: `ui/src/pages/PlansPage.tsx`**
+
+1. **Added "▶ Continue / Validate" button** on each active plan card — navigates to `/chat?task=<encoded task description>`.
+
+2. **Added "View Details" button** alongside it — navigates to the plan detail page (replaces the old click-to-navigate behavior on the whole card).
+
+**Files changed: `ui/src/pages/ChatPage.tsx`**
+
+3. **Reads `?task=` query parameter** on mount — if present, uses it as the initial input value.
+
+4. **Auto-sends the task** — when a task is passed via URL and there are no existing messages, the chat automatically sends it after a 100ms render delay (so the user sees the message being sent immediately).
+
+### Verification
+- ✅ UI TypeScript compiles cleanly (`npx tsc --noEmit`)
+- ✅ Vite production build succeeds (`npx vite build`)
+- ✅ Server TypeScript compiles cleanly (`npx tsc --noEmit`)

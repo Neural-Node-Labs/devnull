@@ -24,6 +24,9 @@ export interface ChatRequest {
   /** Optional: run tool operations against an isolated workspace-agent/ copy instead of the
    *  project's live files. Default: false. */
   isolatedWorkspace?: boolean;
+  /** Optional: when true, the orchestrator auto-continues past the iteration limit instead of
+   *  stopping. Used by the UI's "Continue" button when a limitation message is shown. */
+  continueOnLimit?: boolean;
 }
 
 /** POST /api/v1/chat response data. */
@@ -53,6 +56,7 @@ export interface PlanRequest {
   projectId?: string;
   maxIterations?: number;
   isolatedWorkspace?: boolean;
+  continueOnLimit?: boolean;
 }
 
 /** POST /api/v1/chat/plan response data. */

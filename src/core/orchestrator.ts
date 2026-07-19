@@ -35,6 +35,11 @@ export interface OrchestratorOptions {
    */
   interactive?: boolean;
   /**
+   * When true, the orchestrator auto-continues past the iteration limit instead of stopping.
+   * Used by the API when the UI sends continueOnLimit: true. Overrides onIterationLimitReached.
+   */
+  continueOnLimit?: boolean;
+  /**
    * Called when the iteration ceiling is hit and more work is needed. Return true to reset the
    * counter and continue, false to stop. Defaults to an interactive stdin yes/no prompt. Inject
    * this for automated diagnostics/CI where no TTY is available, or to log/audit every restart
@@ -244,7 +249,10 @@ export class ReActOrchestrator {
           finalContent = "(subagent hit iteration limit without completing)";
           break;
         }
-        const shouldContinue = this.opts.onIterationLimitReached
+        // continueOnLimit takes highest priority — auto-continue without asking
+        const shouldContinue = this.opts.continueOnLimit
+          ? true
+          : this.opts.onIterationLimitReached
           ? await this.opts.onIterationLimitReached(taskDescription, iteration - 1)
           : await this.askContinue(taskDescription, maxIterations);
         await this.telemetry.logThought({

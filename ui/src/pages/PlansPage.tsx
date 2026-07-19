@@ -112,52 +112,94 @@ export function PlansPage() {
             {plans.map((plan) => (
               <div
                 key={plan.id}
-                onClick={() => navigate(`/plans/${plan.id}`)}
                 style={{
                   padding: "16px",
                   borderRadius: "8px",
                   background: "var(--color-bg-secondary)",
-                  cursor: "pointer",
-                  transition: "background 0.15s ease",
                   border: "1px solid var(--color-border)",
                 }}
               >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "8px" }}>
-                  <h3 style={{ fontSize: "15px", fontWeight: 600, margin: 0, color: "var(--color-text)" }}>
-                    {plan.taskDescription}
-                  </h3>
-                  <span
+                <div
+                  onClick={() => navigate(`/plans/${plan.id}`)}
+                  style={{ cursor: "pointer" }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "8px" }}>
+                    <h3 style={{ fontSize: "15px", fontWeight: 600, margin: 0, color: "var(--color-text)" }}>
+                      {plan.taskDescription}
+                    </h3>
+                    <span
+                      style={{
+                        padding: "2px 10px",
+                        borderRadius: "12px",
+                        fontSize: "11px",
+                        fontWeight: 600,
+                        textTransform: "uppercase",
+                        background: `color-mix(in srgb, ${getStatusColor(plan.status)} 15%, transparent)`,
+                        color: getStatusColor(plan.status),
+                        flexShrink: 0,
+                      }}
+                    >
+                      {plan.status}
+                    </span>
+                  </div>
+                  <p
                     style={{
-                      padding: "2px 10px",
-                      borderRadius: "12px",
-                      fontSize: "11px",
-                      fontWeight: 600,
-                      textTransform: "uppercase",
-                      background: `color-mix(in srgb, ${getStatusColor(plan.status)} 15%, transparent)`,
-                      color: getStatusColor(plan.status),
-                      flexShrink: 0,
+                      fontSize: "13px",
+                      color: "var(--color-text-secondary)",
+                      margin: "0 0 8px",
+                      lineHeight: "1.4",
+                      display: "-webkit-box",
+                      WebkitLineClamp: 3,
+                      WebkitBoxOrient: "vertical",
+                      overflow: "hidden",
                     }}
                   >
-                    {plan.status}
-                  </span>
+                    {plan.planContent}
+                  </p>
+                  <div style={{ fontSize: "11px", color: "var(--color-text-secondary)", marginBottom: "12px" }}>
+                    Created: {new Date(plan.createdAt).toLocaleString()}
+                  </div>
                 </div>
-                <p
-                  style={{
-                    fontSize: "13px",
-                    color: "var(--color-text-secondary)",
-                    margin: "0 0 8px",
-                    lineHeight: "1.4",
-                    display: "-webkit-box",
-                    WebkitLineClamp: 3,
-                    WebkitBoxOrient: "vertical",
-                    overflow: "hidden",
-                  }}
-                >
-                  {plan.planContent}
-                </p>
-                <div style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>
-                  Created: {new Date(plan.createdAt).toLocaleString()}
-                </div>
+                {/* Continue/Validate button — only for active plans */}
+                {plan.status === "active" && (
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        navigate(`/chat?task=${encodeURIComponent(plan.taskDescription)}`);
+                      }}
+                      style={{
+                        padding: "6px 14px",
+                        borderRadius: "6px",
+                        border: "none",
+                        background: "var(--color-primary)",
+                        color: "#fff",
+                        fontSize: "12px",
+                        fontWeight: 600,
+                        cursor: "pointer",
+                      }}
+                    >
+                      ▶ Continue / Validate
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        navigate(`/plans/${plan.id}`);
+                      }}
+                      style={{
+                        padding: "6px 14px",
+                        borderRadius: "6px",
+                        border: "1px solid var(--color-border)",
+                        background: "transparent",
+                        color: "var(--color-text-secondary)",
+                        fontSize: "12px",
+                        cursor: "pointer",
+                      }}
+                    >
+                      View Details
+                    </button>
+                  </div>
+                )}
               </div>
             ))}
           </div>

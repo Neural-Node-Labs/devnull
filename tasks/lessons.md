@@ -12,3 +12,8 @@ Track recurring patterns and mistakes here so we don't repeat them.
 ## 2026-07-19: Nginx 504 Gateway Time-out on Task Execution
 
 - **Nginx `proxy_read_timeout` defaults to 60s, which is too short for LLM ReAct loops**: The `/api/v1/chat`, `/api/v1/chat/plan`, and `/api/v1/chat/execute` endpoints run the full ReAct loop (multiple LLM calls + tool executions) which can take several minutes. Without an explicit `proxy_read_timeout`, nginx kills the connection at 60s and returns a 504. Fix: add `proxy_read_timeout 600s;` (10 minutes) to the `/api/` location block in `ui/nginx.conf`.
+
+## 2026-07-19: ReAct Iteration Extension in UI
+
+- **The API's `onIterationLimitReached` was hardcoded to `async () => false`**: In `src/api/routes.ts`, the orchestrator was configured to always stop when hitting the iteration limit. The UI received a `limitation` message but had no way to tell the server to continue. Fix: added `continueOnLimit` option to `OrchestratorOptions` and `ChatRequest`. When `true`, the orchestrator auto-continues past the iteration limit. The UI now shows a "▶ Continue" button on limitation messages that re-sends the task with `continueOnLimit: true`.
+- **The UI had no "Continue" button on limitation messages**: When the server returned a `limitation` field (e.g., "The task did not finish within the iteration limit."), the message was displayed but there was no way for the user to extend the iteration. Fix: added a `handleContinue` function and a "▶ Continue" button that appears on limitation messages, re-sending the same task with `continueOnLimit: true`.
