@@ -10,6 +10,7 @@ import { scheduleCron, scheduleOnce, listScheduled, removeScheduled } from "./sc
 import { runPlaywrightTest } from "./playwrightTool.js";
 import { crawlAndGeneratePlaywrightTest } from "./crawlPlaywrightTool.js";
 import { summarizeUrl } from "./summarizeUrlTool.js";
+import { testApiEndpoint } from "./apiTestTool.js";
 import { githubClone, githubFetch, githubPull, githubStatus, githubCommit, githubPush } from "./githubTool.js";
 import { deployWorkspaceViaSsh } from "./dockerDeploySshTool.js";
 import { rebuildIndex, readIndexedFile } from "./indexingTool.js";
@@ -275,6 +276,51 @@ export async function dispatchToolCall(call: ToolCall, cwd: string = process.cwd
       }
       case "summarize_url_tool": {
         const result = await summarizeUrl(args.url);
+        return { toolCallId: call.id, toolName: name, observation: result, isError: false };
+      }
+      case "api_test_tool": {
+        const result = await testApiEndpoint({
+          url: args.url,
+          method: args.method,
+          queryParams: args.queryParams,
+          headers: args.headers,
+          body: args.body,
+          bodyType: args.bodyType,
+          maxBodyLength: args.maxBodyLength,
+          timeout: args.timeout,
+          expectStatus: args.expectStatus,
+          expectBodyContains: args.expectBodyContains,
+        });
+
+        // If expectStatus was set and doesn't match, return as error
+        if (args.expectStatus !== undefined && result.statusCode !== args.expectStatus) {
+          return {
+            toolCallId: call.id,
+            toolName: name,
+            observation: {
+              error: `Expected status ${args.expectStatus} but got ${result.statusCode}`,
+              result,
+            },
+            isError: true,
+          };
+        }
+
+        // If expectBodyContains was set and body doesn't contain it, return as error
+        if (args.expectBodyContains !== undefined) {
+          const bodyStr = typeof result.body === "string" ? result.body : JSON.stringify(result.body);
+          if (!bodyStr.includes(args.expectBodyContains)) {
+            return {
+              toolCallId: call.id,
+              toolName: name,
+              observation: {
+                error: `Expected body to contain "${args.expectBodyContains}" but it did not`,
+                result,
+              },
+              isError: true,
+            };
+          }
+        }
+
         return { toolCallId: call.id, toolName: name, observation: result, isError: false };
       }
       default:

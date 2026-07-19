@@ -339,4 +339,59 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "api_test_tool",
+      description:
+        "Make an HTTP request to test an API endpoint. Supports GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS with custom headers, JSON/Form/Text bodies, query parameters, and optional response assertions (expectStatus, expectBodyContains). Returns structured results including status code, response headers, parsed body, and timing. Use this to probe, debug, or verify any REST/HTTP API during development or testing.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "The full URL of the API endpoint to test" },
+          method: {
+            type: "string",
+            enum: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+            description: "HTTP method to use",
+          },
+          queryParams: {
+            type: "object",
+            description: "Optional query parameters to append to the URL as key-value pairs",
+            additionalProperties: { type: "string" },
+          },
+          headers: {
+            type: "object",
+            description: "Optional request headers as key-value pairs (e.g. {\"Authorization\": \"Bearer xxx\"})",
+            additionalProperties: { type: "string" },
+          },
+          body: {
+            type: "string",
+            description: "Request body as a string. For JSON, pass a JSON string. For form data, pass URL-encoded string. Omit for GET/HEAD/DELETE requests with no body.",
+          },
+          bodyType: {
+            type: "string",
+            enum: ["json", "text", "form"],
+            description: "How to encode the body. 'json' sets Content-Type: application/json, 'form' sets application/x-www-form-urlencoded, 'text' sets text/plain. Defaults to 'json' if body looks like JSON, otherwise 'text'.",
+          },
+          maxBodyLength: {
+            type: "number",
+            description: "Max response body characters before truncation (default: 10000)",
+          },
+          timeout: {
+            type: "number",
+            description: "Request timeout in milliseconds (default: 30000)",
+          },
+          expectStatus: {
+            type: "number",
+            description: "Assert the response status matches this value. If it doesn't match, the tool returns an error with the actual status and body for debugging.",
+          },
+          expectBodyContains: {
+            type: "string",
+            description: "Assert the response body (as string) contains this substring. If it doesn't, the tool returns an error with the actual body for debugging.",
+          },
+        },
+        required: ["url", "method"],
+      },
+    },
+  },
 ];

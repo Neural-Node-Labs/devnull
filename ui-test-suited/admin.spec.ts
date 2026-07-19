@@ -1,31 +1,41 @@
 import { test, expect } from "@playwright/test";
 
+const UI_BASE = "http://localhost:8080";
+
+async function login(page: any) {
+  await page.goto(`${UI_BASE}/login`);
+  await page.fill("#username", "admin");
+  await page.fill("#password", "admin1234");
+  await page.click("button[type='submit']");
+  await page.waitForURL("**/");
+}
+
 test.describe("Admin Panel", () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto("/");
-    // Navigate to admin page
-    const adminLink = page.getByRole("link", { name: /admin|administration/i });
-    if (await adminLink.isVisible()) {
-      await adminLink.click();
-    }
+    await login(page);
+    await page.goto(`${UI_BASE}/admin`);
+    await page.waitForSelector("h1");
   });
 
   test("admin page is accessible via navigation", async ({ page }) => {
-    // Verify we're on an admin page
     await expect(page).toHaveURL(/admin/i);
   });
 
   test("admin page has user management section", async ({ page }) => {
-    const userManagement = page.locator("text=/user management|manage users|users/i").first();
-    await expect(userManagement).toBeVisible();
+    await expect(page.getByRole("heading", { name: "User Management" })).toBeVisible();
+  });
+
+  test("admin page has an Add User button", async ({ page }) => {
+    const addUserButton = page.locator("button:has-text('Add User')");
+    await expect(addUserButton).toBeVisible();
   });
 
   test("admin can create a new user", async ({ page }) => {
-    const addUserButton = page.getByRole("button", { name: /add user|new user|create/i });
+    const addUserButton = page.locator("button:has-text('Add User')");
     await expect(addUserButton).toBeVisible();
     await addUserButton.click();
 
-    const usernameInput = page.getByRole("textbox", { name: /username|name|email/i });
+    const usernameInput = page.locator("input[aria-label='Username']");
     await expect(usernameInput).toBeVisible();
     await usernameInput.fill("admin_created_" + Date.now());
 
@@ -33,47 +43,43 @@ test.describe("Admin Panel", () => {
     await expect(passwordInput).toBeVisible();
     await passwordInput.fill("AdminPass123!");
 
-    const roleSelector = page.locator("select, [role='combobox'], [data-testid='role-selector']").first();
+    const roleSelector = page.locator("select[data-testid='role-selector']");
     if (await roleSelector.isVisible()) {
-      await roleSelector.selectOption({ label: /admin|Admin/i });
+      await roleSelector.selectOption("admin");
     }
 
-    const saveButton = page.getByRole("button", { name: /save|create|confirm|submit/i });
-    await saveButton.click();
+    const createButton = page.locator("button:has-text('Create User')");
+    await createButton.click();
 
+    // Verify the new user appears in the list
     await expect(page.locator("text=admin_created_").first()).toBeVisible({ timeout: 10_000 });
   });
 
   test("admin can edit existing user roles", async ({ page }) => {
-    const editButton = page.getByRole("button", { name: /edit|modify/i }).first();
+    const editButton = page.locator("button:has-text('Edit')").first();
     await expect(editButton).toBeVisible();
     await editButton.click();
 
-    const roleSelector = page.locator("select, [role='combobox'], [data-testid='role-selector']").first();
+    const roleSelector = page.locator("select[data-testid='role-selector']").first();
     if (await roleSelector.isVisible()) {
-      await roleSelector.selectOption({ label: /user|User/i });
+      await roleSelector.selectOption("user");
     }
 
-    const saveButton = page.getByRole("button", { name: /save|update|confirm/i });
+    const saveButton = page.locator("button:has-text('Save')");
     await saveButton.click();
   });
 
   test("admin can delete a user", async ({ page }) => {
-    const deleteButton = page.getByRole("button", { name: /delete|remove/i }).first();
+    const deleteButton = page.locator("button:has-text('Delete')").first();
     await expect(deleteButton).toBeVisible();
   });
 
-  test("admin-only sections are not visible to non-admin users", async ({ page }) => {
-    // This test verifies that admin-specific UI elements exist
-    // (they should be hidden for non-admin users at runtime)
-    const adminSection = page.locator("[data-testid='admin-section'], .admin-only, [role='region']").first();
-    // The section may or may not be visible depending on auth state — just verify it exists in DOM
-    await expect(adminSection).toBeAttached();
+  test("admin page lists all registered users in a table", async ({ page }) => {
+    const userTable = page.locator("table");
+    await expect(userTable).toBeVisible();
   });
 
-  test("admin page lists all registered users", async ({ page }) => {
-    const userList = page.locator("table, [data-testid='user-list'], .user-list").first();
-    await expect(userList).toBeVisible();
+  test("admin page shows user management description", async ({ page }) => {
+    await expect(page.locator("text=User management and system administration")).toBeVisible();
   });
 });
-

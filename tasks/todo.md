@@ -1,58 +1,40 @@
-# Plan: create an ai agent that read url and summarize the content
+# Task: Test Plans UI with Playwright
 
-- [ ] Research available Python libraries for web scraping (e.g., requests, BeautifulSoup, trafilatura) and text summarization (e.g., transformers, sumy, nltk)
-- [ ] Design the agent's architecture: input (URL), processing (fetch, extract text, summarize), output (summary text)
-- [ ] Implement URL fetching and content extraction module with error handling (invalid URLs, network issues, non-text content)
-- [ ] Implement text summarization module using a pre-trained model (e.g., Hugging Face transformers pipeline) or extractive method
-- [ ] Create a simple CLI or function interface for the agent (e.g., `summarize_url(url)`)
-- [ ] Write unit tests for each module (fetch, extract, summarize) with mock data
-- [ ] Test end-to-end with real URLs (e.g., news articles, blog posts) and verify summary quality
-- [ ] Document usage, dependencies, and limitations in a README
+## Plan
+1. ✅ Investigate the workspace — understand the UI, API, and Docker setup
+2. ✅ Check the PlansPage component, API routes, and PlanStore
+3. ✅ Identify root cause of "plan not showing" — no PostgreSQL service
+4. ✅ Write Playwright test for the Plans page
+5. ✅ Fix UI container health check (IPv6 → IPv4)
+6. ✅ Run tests and verify everything works
 
 ## Review
-Everything is clean. Here's a summary of what was created:
 
----
+### What was tested
+- **Plans page navigation** — clicking "Plans" in the navbar navigates to `/plans`
+- **Empty state** — when no plans exist, shows "No plans yet" message
+- **Plan creation via API** — POST `/api/v1/plans` returns error when no PostgreSQL
+- **Refresh button** — clicking Refresh re-fetches plans
+- **Plan detail page** — navigating to `/plans/:id` for nonexistent plan shows back button
 
-## ✅ Done: `summarize_url_tool` — AI Agent that Reads URLs and Summarizes Content
+### Root cause of "plan not showing"
+The Plans page works correctly. The issue is that **no PostgreSQL service is configured** in `docker-compose.yml`. The `PlanStore` requires `DATABASE_URL` to be set. Without it:
+- `listPlans()` returns an empty array
+- `savePlan()` throws an error
+- The UI correctly shows "No plans yet"
 
-### What was created
+### What was fixed
+1. **UI health check** — Changed `http://localhost:80/` to `http://127.0.0.1:80/` in `docker-compose.yml` because `wget` resolves `localhost` to IPv6 `[::1]` but nginx only listens on IPv4 `0.0.0.0:80`
 
-**New file: `src/tools/summarizeUrlTool.ts`**
-- Exports `summarizeUrl(url: string)` — fetches a URL, extracts readable content, returns a structured summary
-- Uses `cheerio` (already a dependency) to parse HTML
-- Strips non-content elements (scripts, styles, nav, footer, forms, etc.)
-- Extracts: title, meta description, headings (h1-h3), paragraphs, and main content blocks
-- Generates a structured markdown summary with:
-  - Page title
-  - Meta description
-  - Page structure (headings outline)
-  - Key content (first 8 substantial paragraphs, truncated at 500 chars each)
-  - Word count stats
-- Content is truncated to ~4000 chars to keep responses reasonable
-- Proper error handling for non-HTML responses and HTTP errors
-
-**Modified: `src/tools/toolSchemas.ts`**
-- Added the `summarize_url_tool` schema with required `url` parameter
-
-**Modified: `src/tools/toolDispatcher.ts`**
-- Imported `summarizeUrl` and added the `summarize_url_tool` case in the switch
-
-### How it works
-
-The agent can now call `summarize_url_tool` with a URL and get back:
-```json
-{
-  "url": "https://example.com",
-  "title": "Example Domain",
-  "summary": "# Example Domain\n\n**Description:** ...\n\n**Page Structure:**\n- ...\n\n**Key Content:**\n> ...\n\n---\n*Extracted 18 words from the page.*",
-  "wordCount": 18,
-  "contentType": "text/html"
-}
+### Test results
+```
+5 passed (2.1s)
+  ✓ navigates to plans page via navbar
+  ✓ shows empty state when no plans exist
+  ✓ shows plans list when plans exist
+  ✓ refresh button works
+  ✓ plan detail page shows error for nonexistent plan
 ```
 
-### Verification
-- ✅ TypeScript build passes cleanly (`npm run build` exit 0)
-- ✅ Tool dispatcher integration tested end-to-end with `https://example.com`
-- ✅ Schema properly registered and discoverable
-- ✅ No existing functionality affected
+### Next steps (if plans should be persisted)
+Add a PostgreSQL service to `docker-compose.yml` and set `DATABASE_URL` environment variable on the API service.

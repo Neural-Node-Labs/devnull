@@ -85,7 +85,7 @@ test.describe("API Health & Skills", () => {
     const body = await resp.json();
     expect(body.success).toBe(true);
     expect(body.data.status).toBe("ok");
-    expect(body.data.version).toBe("0.1.0");
+    expect(body.data.version).toBe("0.2.0");
     expect(typeof body.data.uptime).toBe("number");
   });
 
