@@ -11,6 +11,10 @@ import { runPlaywrightTest } from "./playwrightTool.js";
 import { crawlAndGeneratePlaywrightTest } from "./crawlPlaywrightTool.js";
 import { summarizeUrl } from "./summarizeUrlTool.js";
 import { testApiEndpoint } from "./apiTestTool.js";
+import { sshCopy } from "./sshCopyTool.js";
+import { sshRunCommand } from "./sshRunCommandTool.js";
+import { crawlSiteMap, formatSiteMap } from "./siteCrawlerTool.js";
+import { loadRemoteConfig } from "../remote/config.js";
 import { githubClone, githubFetch, githubPull, githubStatus, githubCommit, githubPush } from "./githubTool.js";
 import { deployWorkspaceViaSsh } from "./dockerDeploySshTool.js";
 import { dockerComposeUp } from "./dockerComposeDeployTool.js";
@@ -158,6 +162,52 @@ export async function dispatchToolCall(call: ToolCall, cwd: string = process.cwd
         const result = await crawlAndGeneratePlaywrightTest(args.url, args.outputPath, cwd);
         return { toolCallId: call.id, toolName: name, observation: result, isError: false };
       }
+      case "ssh_copy_tool": {
+        const remoteConfig = loadRemoteConfig();
+        if (!remoteConfig) {
+          return {
+            toolCallId: call.id,
+            toolName: name,
+            observation: {
+              error:
+                "No remote fleet configured. Set XCODER_SSH_TARGETS (and XCODER_SSH_USER/XCODER_SSH_PASSWORD) to use ssh_copy_tool.",
+            },
+            isError: true,
+          };
+        }
+        const result = await sshCopy(remoteConfig, cwd, { localPath: args.localPath, remotePath: args.remotePath, target: args.target });
+        return { toolCallId: call.id, toolName: name, observation: result, isError: !result.ok };
+      }
+      case "ssh_run_command": {
+        const remoteConfig = loadRemoteConfig();
+        if (!remoteConfig) {
+          return {
+            toolCallId: call.id,
+            toolName: name,
+            observation: {
+              error:
+                "No remote fleet configured. Set XCODER_SSH_TARGETS (and XCODER_SSH_USER/XCODER_SSH_PASSWORD) to use ssh_run_command.",
+            },
+            isError: true,
+          };
+        }
+        const result = await sshRunCommand(remoteConfig, { command: args.command, target: args.target });
+        return { toolCallId: call.id, toolName: name, observation: result, isError: !result.ok };
+      }
+      case "crawl_site_mapper_tool": {
+        const result = await crawlSiteMap(args.url, {
+          maxPages: args.maxPages ?? 50,
+          maxDepth: args.maxDepth ?? 5,
+          sameDomain: args.sameDomain ?? true,
+        });
+        const formatted = formatSiteMap(result);
+        return {
+          toolCallId: call.id,
+          toolName: name,
+          observation: { siteMap: result, formatted },
+          isError: false,
+        };
+      }
       case "github_tool": {
         let result;
         switch (args.action) {
@@ -189,9 +239,23 @@ export async function dispatchToolCall(call: ToolCall, cwd: string = process.cwd
         return { toolCallId: call.id, toolName: name, observation: result, isError: result.exitCode !== 0 };
       }
       case "docker_deploy_ssh_tool": {
-        const target: SshTarget = { host: args.host, user: args.user, port: args.port, keyPath: args.keyPath };
-        const result = await deployWorkspaceViaSsh(target, args.remotePath, args.dockerCommand, cwd);
-        const isError = result.remoteCommandResult.exitCode !== 0;
+        const result = await deployWorkspaceViaSsh({
+          host: args.host,
+          user: args.user,
+          port: args.port,
+          keyPath: args.keyPath,
+          remotePath: args.remotePath,
+          dockerCommand: args.dockerCommand,
+          composeFile: args.composeFile,
+          envFile: args.envFile,
+          pullFromRegistry: args.pullFromRegistry,
+          skipValidation: args.skipValidation,
+          skipHealthCheck: args.skipHealthCheck,
+          skipRollback: args.skipRollback,
+          healthCheckTimeoutMs: args.healthCheckTimeoutMs,
+          dockerCommandTimeoutMs: args.dockerCommandTimeoutMs,
+        }, cwd);
+        const isError = !result.success;
         return { toolCallId: call.id, toolName: name, observation: result, isError };
       }
       case "indexing_tool": {

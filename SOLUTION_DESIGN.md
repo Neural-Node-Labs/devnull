@@ -166,7 +166,7 @@ by `ToolDispatcher`.
 | `playwright_run_tool` | `src/tools/playwrightTool.ts` | Run a Playwright spec via `npx playwright test`, returns pass/fail summary |
 | `crawl_and_generate_playwright_test_tool` | `src/tools/crawlPlaywrightTool.ts` | Fetch a URL, extract links/buttons/forms, write a Playwright test skeleton |
 | `github_tool` | `src/tools/githubTool.ts` | clone/fetch/pull/status/commit/push, using `GITHUB_TOKEN` for HTTPS auth |
-| `docker_deploy_ssh_tool` | `src/tools/dockerDeploySshTool.ts` | Tar the workspace, ship it over SSH, run a Docker command remotely |
+| `docker_deploy_ssh_tool` | `src/tools/dockerDeploySshTool.ts` | Enhanced remote Docker deploy: pre-deploy validation (docker version, disk space), rollback snapshot/restore, health verification (polls until all services healthy), compose file selection, registry pull mode, env file shipping, detailed deploy report with per-service status |
 | `subagent_tool` | `src/tools/subagentTool.ts` | Delegate a focused task to a fresh, isolated sub-orchestrator; only its final summary returns |
 
 Tool schema names use `snake_case` with a `_tool` suffix to match OpenAI/DeepSeek function-

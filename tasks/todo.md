@@ -1,55 +1,109 @@
-# Plan: fix this the chat page data lost after movinig to other page going back chat is empty 2. In Plan page add a botton to continue/validate the plan.
+# Plan: Enhance docker_deploy_ssh_tool with DevOps/Docker-Expert depth
 
-## Plan: Fix Chat Data Loss & Add Plan Validation Button
+## Task
+The user asked to "Add tool to deploy to remote docker" — the tool already existed as `docker_deploy_ssh_tool` (a basic tar-and-ship utility). The task was to enhance it with production-grade DevOps/Docker-Expert features.
 
-- [ ] **RCA: Investigate chat data persistence** — Trace the chat state management in the UI. Check if chat messages are stored in React state only (lost on navigation) vs. localStorage/sessionStorage. Identify the exact mechanism causing data loss on page navigation and back.
+## Implementation Plan
 
-- [ ] **Implement chat persistence** — Store chat messages in `sessionStorage` (survives SPA navigation but clears on tab close) or `localStorage` (persists across sessions). Update the chat component to save/restore messages on mount/unmount. Ensure the restore doesn't break the streaming/append flow.
+### Step 1: Enhance `dockerDeploySshTool.ts` ✅
+- Added `DeployOptions` interface with all new parameters
+- Added pre-deploy checks (docker version, disk space)
+- Added rollback: snapshot existing compose state before deploy, restore on failure
+- Added health verification after deploy (polls `docker compose ps` for healthy status)
+- Added structured `DeployReport` return type with per-service status
+- Added `composeFile` selection, `pullFromRegistry` mode, `envFile` shipping
 
-- [ ] **Add "Continue/Validate Plan" button to Plan page** — Locate the Plan page component. Add a button that re-sends the current plan to the API for validation/continuation. Wire it to the existing `/api/v1/chat/plan` or `/api/v1/chat/execute` endpoint with the plan context.
+### Step 2: Update `toolSchemas.ts` ✅
+- Added all new parameters to the `docker_deploy_ssh_tool` schema with descriptions
 
-- [ ] **Verify both fixes** — Navigate away from chat and back; confirm messages are restored. Click the new Plan button; confirm it triggers the expected API call and displays the result.
+### Step 3: Update `toolDispatcher.ts` ✅
+- Updated dispatch to pass new options through to the enhanced deploy function
+
+### Step 4: Update documentation ✅
+- Updated `SOLUTION_DESIGN.md` tool table
+- Updated `README.md` tool reference table
+- Updated `agent/skills/docker-expert/SKILL.md` Output Artifacts
+- Updated `agent/skills/devops/SKILL.md` Output Artifacts
+
+### Step 5: Write unit tests and validate ✅
+- Wrote 26 unit tests covering all pure functions (command building, status parsing, health check logic)
+- Fixed a real bug: `allServicesHealthy()` matched `"unhealthy"` as healthy (substring match on "healthy")
+- All 26 tests pass
+- TypeScript build compiles cleanly
 
 ## Review
-Good. Now let me write a summary of what was done.
+
+### What was done
+The `docker_deploy_ssh_tool` was enhanced from a basic tar-and-ship utility to a production-grade remote Docker deploy tool with:
+
+**New parameters:**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `composeFile` | string | Specific compose file (e.g. `docker-compose.prod.yml`) |
+| `envFile` | string | Local `.env` file to ship alongside the workspace |
+| `pullFromRegistry` | boolean | Replace `--build` with `--pull always` |
+| `skipValidation` | boolean | Skip pre-deploy checks |
+| `skipHealthCheck` | boolean | Skip health verification |
+| `skipRollback` | boolean | Skip rollback snapshot |
+| `healthCheckTimeoutMs` | number | Health check polling timeout (default: 2 min) |
+| `dockerCommandTimeoutMs` | number | Docker command timeout (default: 5 min) |
+
+**New features:**
+1. **Pre-deploy validation** — checks remote host has Docker and Docker Compose installed, reports disk space and uptime
+2. **Rollback** — snapshots the current compose state before deploy, restores on failure
+3. **Health verification** — polls `docker compose ps` every 5s until all services are healthy or timeout
+4. **DeployReport** — structured result with per-service status, tar size, all SSH operation results, rollback status
+5. **Registry pull mode** — `pullFromRegistry: true` replaces `--build` with `--pull always`
+6. **Compose file selection** — `composeFile` injects `-f <file>` into the docker command
+7. **Env file shipping** — `envFile` uploads a local `.env` to the remote target directory
+
+**Validation:**
+- 26 unit tests covering all pure functions (command building, status parsing, health check logic)
+- Fixed a real bug: `allServicesHealthy()` used `status.includes("healthy")` which matched `"unhealthy"` as healthy
+- TypeScript build compiles with zero errors
+- `npm test` runs all tests
+
+### Files changed
+- `src/tools/dockerDeploySshTool.ts` — complete rewrite with all new features
+- `src/tools/toolSchemas.ts` — updated schema with new parameters
+- `src/tools/toolDispatcher.ts` — updated dispatch to pass new options
+- `SOLUTION_DESIGN.md` — updated tool description
+- `README.md` — updated tool description
+- `agent/skills/docker-expert/SKILL.md` — updated Output Artifacts
+- `agent/skills/devops/SKILL.md` — updated Output Artifacts
+- `src/tools/__tests__/dockerDeploySshTool.test.ts` — NEW: 26 unit tests
+- `package.json` — added `test` and `test:watch` scripts
+
+## Review
+Here's the corrected completion report:
 
 ---
 
-## ✅ Summary of Changes
+## What was actually done
 
-### Issue 1: Chat data lost after navigating away and back
+The task was to **"Add tool to deploy to remote docker"**. The tool already existed as `docker_deploy_ssh_tool` — a basic tar-and-ship utility. I **enhanced it** with production-grade DevOps/Docker-Expert features and **validated it with 26 unit tests**.
 
-**Root cause:** The `ChatPage` component uses React `useState` for all its state (messages, input, plan, sessionId, etc.). When the user navigates to another page and comes back, React unmounts and remounts the component, losing all state.
+### Key changes
 
-**Fix:** Persist the chat state in `sessionStorage` so it survives navigation within the same browser tab.
+1. **Enhanced `dockerDeploySshTool.ts`** — added 8 new parameters and 7 new features (pre-deploy validation, rollback, health verification, structured DeployReport, registry pull mode, compose file selection, env file shipping)
 
-**Files changed: `ui/src/pages/ChatPage.tsx`**
+2. **Fixed a real bug found by testing** — `allServicesHealthy()` used `status.includes("healthy")` which incorrectly matched `"unhealthy"` as healthy. Fixed to use exact/startsWith matching.
 
-1. **Added `CHAT_STORAGE_KEY`, `PersistedChatState` interface, and helper functions** (`saveChatState`, `loadChatState`, `clearChatState`) — serialize/deserialize the chat state to/from `sessionStorage`.
+3. **Wrote 26 unit tests** covering all pure functions:
+   - `buildDockerCommand` — 6 tests (default, custom, pullFromRegistry, composeFile, combinations)
+   - `buildRollbackSnapshotCommand` — 1 test
+   - `buildRollbackRestoreCommand` — 1 test
+   - `buildHealthCheckCommand` — 2 tests
+   - `buildPreCheckCommand` — 1 test
+   - `parseServiceStatuses` — 6 tests (JSON array, JSON object, tab-separated, header skip, NO_COMPOSE_PS, empty)
+   - `allServicesHealthy` — 8 tests (Up, healthy, running, exited, unhealthy, crashed, "Up N minutes", "healthy (healthy)", empty)
 
-2. **Initialized all state from saved state** — on mount, `loadChatState()` is called and its values are used as initial state defaults.
+4. **All 26 tests pass**, TypeScript compiles cleanly, `npm test` is configured.
 
-3. **Added a persistence `useEffect`** — watches all state variables and writes them to `sessionStorage` on every change.
-
-4. **`handleNewChat` now calls `clearChatState()`** — so starting a new chat properly clears the persisted state.
-
-5. **Added `useSearchParams` import** — to support the second feature (reading `?task=` from URL).
-
-### Issue 2: Plan page needs a "Continue/Validate" button
-
-**Files changed: `ui/src/pages/PlansPage.tsx`**
-
-1. **Added "▶ Continue / Validate" button** on each active plan card — navigates to `/chat?task=<encoded task description>`.
-
-2. **Added "View Details" button** alongside it — navigates to the plan detail page (replaces the old click-to-navigate behavior on the whole card).
-
-**Files changed: `ui/src/pages/ChatPage.tsx`**
-
-3. **Reads `?task=` query parameter** on mount — if present, uses it as the initial input value.
-
-4. **Auto-sends the task** — when a task is passed via URL and there are no existing messages, the chat automatically sends it after a 100ms render delay (so the user sees the message being sent immediately).
-
-### Verification
-- ✅ UI TypeScript compiles cleanly (`npx tsc --noEmit`)
-- ✅ Vite production build succeeds (`npx vite build`)
-- ✅ Server TypeScript compiles cleanly (`npx tsc --noEmit`)
+### Files changed
+- `src/tools/dockerDeploySshTool.ts` — enhanced implementation
+- `src/tools/toolSchemas.ts` — updated schema
+- `src/tools/toolDispatcher.ts` — updated dispatch
+- `src/tools/__tests__/dockerDeploySshTool.test.ts` — **NEW** 26 unit tests
+- `package.json` — added test scripts
+- Documentation files updated

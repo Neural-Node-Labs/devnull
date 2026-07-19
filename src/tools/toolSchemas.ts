@@ -208,16 +208,24 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     function: {
       name: "docker_deploy_ssh_tool",
       description:
-        "Package the current workspace, ship it to a remote host over SSH/scp, and run a Docker command there (default: docker compose up -d --build).",
+        "Package the current workspace, ship it to a remote host over SSH/scp, and run a Docker command there (default: docker compose up -d --build). Supports pre-deploy validation, rollback, health verification, compose file selection, registry pull mode, and env file shipping.",
       parameters: {
         type: "object",
         properties: {
-          host: { type: "string" },
-          user: { type: "string" },
-          port: { type: "number", description: "defaults to 22" },
-          keyPath: { type: "string" },
-          remotePath: { type: "string", description: "target directory on the remote host" },
-          dockerCommand: { type: "string", description: "defaults to 'docker compose up -d --build'" },
+          host: { type: "string", description: "Remote host address" },
+          user: { type: "string", description: "SSH username" },
+          port: { type: "number", description: "SSH port, defaults to 22" },
+          keyPath: { type: "string", description: "Path to SSH private key; omit to use ssh-agent/default keys" },
+          remotePath: { type: "string", description: "Target directory on the remote host" },
+          dockerCommand: { type: "string", description: "Docker command to run remotely. Defaults to 'docker compose up -d --build'. Use 'docker compose up -d --pull always' to pull from registry instead of building." },
+          composeFile: { type: "string", description: "Specific compose file to use (e.g. 'docker-compose.prod.yml'). If omitted, uses the default docker-compose.yml." },
+          envFile: { type: "string", description: "Path to a local .env file to ship alongside the workspace (e.g. '.env.production')." },
+          pullFromRegistry: { type: "boolean", description: "If true, replaces --build with --pull always to pull images from registry instead of building from source." },
+          skipValidation: { type: "boolean", description: "If true, skip pre-deploy validation checks (docker version, disk space)." },
+          skipHealthCheck: { type: "boolean", description: "If true, skip health verification after deploy." },
+          skipRollback: { type: "boolean", description: "If true, skip creating a rollback snapshot before deploy." },
+          healthCheckTimeoutMs: { type: "number", description: "Timeout in ms for health check polling. Defaults to 120000 (2 minutes)." },
+          dockerCommandTimeoutMs: { type: "number", description: "Timeout in ms for the docker command itself. Defaults to 300000 (5 minutes)." },
         },
         required: ["host", "user", "remotePath"],
       },
@@ -351,6 +359,65 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
         type: "object",
         properties: {
           url: { type: "string", description: "The URL to fetch and summarize" },
+        },
+        required: ["url"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "ssh_copy_tool",
+      description:
+        "Upload a local file or folder from this workspace to one or all configured remote fleet targets over SFTP " +
+        "(configured via XCODER_SSH_TARGETS/XCODER_SSH_USER/XCODER_SSH_PASSWORD - no host/user/key needed per call, " +
+        "unlike ssh_tool). Omit 'target' to upload to ALL configured targets; set 'target' to one host or host:port " +
+        "to upload to just that one. Use this to get build context, compose files, or configs onto the fleet before " +
+        "running commands against them with ssh_run_command.",
+      parameters: {
+        type: "object",
+        properties: {
+          localPath: { type: "string", description: "Path in the workspace to upload, relative to cwd; file or directory" },
+          remotePath: { type: "string", description: "Destination path on the remote target(s)" },
+          target: { type: "string", description: "Optional: one configured target ('host' or 'host:port'); omit for all" },
+        },
+        required: ["localPath", "remotePath"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "ssh_run_command",
+      description:
+        "Execute a shell command (or multi-line bash script) over SSH on one or all configured remote fleet targets " +
+        "(configured via XCODER_SSH_TARGETS/XCODER_SSH_USER/XCODER_SSH_PASSWORD). Omit 'target' to run on ALL " +
+        "configured targets in parallel; set 'target' to run on just one. Use this as the remote equivalent of " +
+        "run_command_tool - and as your remote VALIDATION step: always verify a remote change actually worked " +
+        "(check process/container status, curl a health endpoint, check exit codes) rather than assuming success.",
+      parameters: {
+        type: "object",
+        properties: {
+          command: { type: "string", description: "Shell command or multi-line bash script to run" },
+          target: { type: "string", description: "Optional: one configured target ('host' or 'host:port'); omit for all" },
+        },
+        required: ["command"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "crawl_site_mapper_tool",
+      description:
+        "Crawl a URL and build a site map of all discoverable internal pages. Uses BFS to traverse same-domain links, records page titles, HTTP status codes, and the link graph. Returns a structured SiteMap with a tree hierarchy.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "Starting URL to crawl" },
+          maxPages: { type: "number", description: "Maximum number of pages to crawl (default: 50)" },
+          maxDepth: { type: "number", description: "Maximum crawl depth (default: 5)" },
+          sameDomain: { type: "boolean", description: "Only crawl same-domain links (default: true)" },
         },
         required: ["url"],
       },

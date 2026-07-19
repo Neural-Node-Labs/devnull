@@ -371,7 +371,7 @@ for how thinking mode, `reasoning_effort`, and `reasoning_content` are actually 
 | `playwright_run_tool` | Run a Playwright spec via `npx playwright test`, returns pass/fail summary |
 | `crawl_and_generate_playwright_test_tool` | Fetch a URL, extract links/buttons/forms, write a Playwright test skeleton |
 | `github_tool` | clone/fetch/pull/status/commit/push, using `GITHUB_TOKEN` for HTTPS auth if set |
-| `docker_deploy_ssh_tool` | Tar the workspace, ship it over SSH, run a Docker command remotely |
+| `docker_deploy_ssh_tool` | Enhanced remote Docker deploy: pre-deploy validation (docker version, disk space), rollback snapshot/restore, health verification (polls until all services healthy), compose file selection, registry pull mode, env file shipping, detailed deploy report with per-service status |
 | `subagent_tool` | Delegate a focused task to a fresh, isolated sub-orchestrator; only its final summary returns |
 
 `ssh_tool`, `github_tool`, `schedule_task_tool`, and `crawl_and_generate_playwright_test_tool`
