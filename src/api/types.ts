@@ -14,6 +14,19 @@ export interface ChatRequest {
   task: string;
   /** Optional: force plan mode on/off for this request. */
   planMode?: "auto" | "always" | "never";
+  /** Optional: collapse stale/superseded file-read snapshots in context. Default: false. */
+  leanToken?: boolean;
+  /** Optional: which project to run against. Defaults to the currently active project; falls
+   *  back to the server's own cwd if no projects exist at all. */
+  projectId?: string;
+  /** Optional: cap on ReAct loop iterations before asking whether to continue. */
+  maxIterations?: number;
+  /** Optional: run tool operations against an isolated workspace-agent/ copy instead of the
+   *  project's live files. Default: false. */
+  isolatedWorkspace?: boolean;
+  /** Optional: when true, the orchestrator auto-continues past the iteration limit instead of
+   *  stopping. Used by the UI's "Continue" button when a limitation message is shown. */
+  continueOnLimit?: boolean;
 }
 
 /** POST /api/v1/chat response data. */
@@ -25,12 +38,25 @@ export interface ChatResponse {
   plan?: string;
   /** Session ID for the plan, if plan mode was active. The UI can use this with /chat/execute. */
   sessionId?: string;
+  /** Cumulative token usage for this run (includes subagent usage). */
+  usage?: { promptTokens: number; completionTokens: number; totalTokens: number; reasoningTokens?: number };
+  /** Rolling self-healing health score (0-100) at the end of the run. */
+  healthScore?: number;
+  /** Present when the run ended without a clean success — surfaced distinctly from a generic
+   *  transport error so the UI can show *why* it stopped (iteration limit, validator exhausted,
+   *  plan rejected, etc.) rather than just "something went wrong". */
+  limitation?: string;
 }
 
 /** POST /api/v1/chat/plan request body. */
 export interface PlanRequest {
   task: string;
   planMode?: "auto" | "always" | "never";
+  leanToken?: boolean;
+  projectId?: string;
+  maxIterations?: number;
+  isolatedWorkspace?: boolean;
+  continueOnLimit?: boolean;
 }
 
 /** POST /api/v1/chat/plan response data. */
@@ -50,6 +76,7 @@ export interface ExecuteRequest {
 export interface ExecuteResponse {
   result: string;
   iterations: number;
+  limitation?: string;
 }
 
 /** GET /api/v1/health response data. */
@@ -115,3 +142,4 @@ export interface LoginResponse {
   username: string;
   role: "admin" | "user";
 }
+

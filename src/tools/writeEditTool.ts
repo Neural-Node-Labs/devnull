@@ -26,3 +26,4 @@ export function editFile(filePath: string, oldStr: string, newStr: string, cwd: 
   fs.writeFileSync(full, updated, "utf-8");
   return { file: full, bytesWritten: Buffer.byteLength(updated, "utf-8") };
 }
+

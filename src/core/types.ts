@@ -22,6 +22,9 @@ export interface ReActStep {
   thought: string;
   action?: { tool: string; input: unknown };
   observation?: unknown;
+  /** Heuristic 0-100 self-healing score for this step (see src/core/stepScorer.ts). Undefined
+   *  for steps that don't go through a tool call (e.g. the iteration-limit check entry). */
+  score?: number;
 }
 
 export interface TelemetryInterface {
@@ -47,7 +50,7 @@ export interface ToolSchema {
     description: string;
     parameters: {
       type: "object";
-      properties: Record<string, { type: string; description?: string; items?: unknown }>;
+      properties: Record<string, Record<string, unknown>>;
       required?: string[];
     };
   };
@@ -59,10 +62,19 @@ export interface ToolCall {
   function: { name: string; arguments: string }; // arguments is a JSON string
 }
 
+export interface LlmUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  reasoningTokens?: number; // thinking-mode CoT tokens, subset of completionTokens
+  cachedTokens?: number; // prompt tokens served from DeepSeek's context cache (cheaper)
+}
+
 export interface LlmResponse {
   content: string;
   toolCalls: ToolCall[];
   reasoningContent?: string; // present in thinking mode; must be carried into the next assistant message
+  usage?: LlmUsage;
 }
 
 export interface LlmClient {
@@ -85,3 +97,4 @@ export interface IndexFile {
   generatedAt: string;
   entries: IndexEntry[];
 }
+

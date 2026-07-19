@@ -102,6 +102,7 @@ export function LoginPage() {
               onChange={(e) => setUsername(e.target.value)}
               placeholder="Enter your username"
               autoFocus
+              autoComplete="username"
               style={{
                 width: "100%",
                 padding: "10px 12px",
@@ -135,6 +136,7 @@ export function LoginPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="Enter your password"
+              autoComplete="current-password"
               style={{
                 width: "100%",
                 padding: "10px 12px",
@@ -187,3 +189,4 @@ export function LoginPage() {
     </div>
   );
 }
+

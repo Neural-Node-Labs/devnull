@@ -46,3 +46,4 @@ function parseSummary(jsonOutput: string): PlaywrightRunResult["summary"] | unde
     return undefined; // non-JSON output (e.g. playwright not installed) — caller sees raw stdout/stderr
   }
 }
+

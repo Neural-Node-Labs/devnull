@@ -17,9 +17,15 @@ export function AdminPage() {
   }, []);
 
   const loadUsers = async () => {
-    const res = await api.listUsers();
-    if (res.success && res.data) {
-      setUsers(res.data as User[]);
+    try {
+      const res = await api.listUsers();
+      if (res.success && res.data) {
+        setUsers(res.data as User[]);
+      } else {
+        showMessage("error", res.error ?? "Failed to load users");
+      }
+    } catch (err) {
+      showMessage("error", err instanceof Error ? err.message : "Failed to load users");
     }
   };
 
@@ -265,3 +271,4 @@ export function AdminPage() {
     </div>
   );
 }
+

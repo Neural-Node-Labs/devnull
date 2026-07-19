@@ -16,3 +16,4 @@ console.log(JSON.stringify(hang));
 if (hang.responded) throw new Error("FAIL: should NOT report success for a process that never actually serves");
 
 console.log("PASS: health-check helper correctly distinguishes a genuinely working server from a crash and from a hollow non-serving process");
+

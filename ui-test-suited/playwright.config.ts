@@ -25,3 +25,4 @@ export default defineConfig({
     ["html", { outputFolder: "playwright-report" }],
   ],
 });
+

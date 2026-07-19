@@ -1,6 +1,23 @@
 import { ToolSchema } from "../core/types.js";
 
 export const TOOL_SCHEMAS: ToolSchema[] = [
+    {
+      type: "function",
+      function: {
+        name: "conversation_tool",
+        description: "Use this tool for casual conversation, greetings (hello, hi), or clarifying questions that do not require any file modifications or terminal command operations.",
+        parameters: {
+          type: "object",
+          properties: {
+            reply: {
+              type: "string",
+              description: "Your friendly greeting or conversational response directed to the user."
+            },
+          },
+          required: ["reply"],
+        },
+      },
+    },
   {
     type: "function",
     function: {
@@ -172,6 +189,23 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     type: "function",
     function: {
+      name: "docker_compose_deploy_tool",
+      description:
+        "Run `docker compose up -d --build` locally in the specified project directory. Use this to deploy the devnull stack (or any docker-compose project) on the local machine. Returns build logs and container status.",
+      parameters: {
+        type: "object",
+        properties: {
+          projectDir: {
+            type: "string",
+            description: "Path to the directory containing docker-compose.yml. Defaults to the current working directory.",
+          },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "docker_deploy_ssh_tool",
       description:
         "Package the current workspace, ship it to a remote host over SSH/scp, and run a Docker command there (default: docker compose up -d --build).",
@@ -223,6 +257,157 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
           },
         },
         required: ["action"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "task_history_tool",
+      description:
+        "Query the persistent history of previously completed top-level tasks in this workspace. This is NOT automatically included in your context — you must call this explicitly whenever you need it, e.g. the user says 'continue', asks 'what was the last task', references earlier work without repeating what it was, or you need to check whether something was already done in a prior session.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", description: "'recent' to get the most recent tasks, or 'search' to keyword-search past task descriptions/summaries" },
+          limit: { type: "number", description: "Max number of tasks to return, defaults to 5" },
+          query: { type: "string", description: "Keyword to search for; required when action='search'" },
+        },
+        required: ["action"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "save_plan_tool",
+      description:
+        "Save a plan to PostgreSQL. The plan is stored with its task description, plan content, and individual tasks. Use this when the UI is active and plans should be persisted in the database for the LLM to manage task status.",
+      parameters: {
+        type: "object",
+        properties: {
+          taskDescription: { type: "string", description: "The original task description that generated this plan" },
+          planContent: { type: "string", description: "The full plan content/markdown" },
+          tasks: { type: "array", items: { type: "string" }, description: "Array of individual task descriptions extracted from the plan" },
+        },
+        required: ["taskDescription", "planContent", "tasks"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_task_status_tool",
+      description:
+        "Update the status of a task within a plan. The LLM can use this to track progress as tasks are completed, in progress, failed, or skipped.",
+      parameters: {
+        type: "object",
+        properties: {
+          taskId: { type: "string", description: "The ID of the task to update" },
+          status: { type: "string", description: "New status: 'pending', 'in_progress', 'completed', 'failed', or 'skipped'" },
+        },
+        required: ["taskId", "status"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "add_plan_task_tool",
+      description:
+        "Add a new task to an existing plan. Use this when the LLM determines additional work is needed that wasn't in the original plan.",
+      parameters: {
+        type: "object",
+        properties: {
+          planId: { type: "string", description: "The ID of the plan to add the task to" },
+          description: { type: "string", description: "Description of the new task" },
+        },
+        required: ["planId", "description"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_plan_task_tool",
+      description:
+        "Delete a task from a plan. Use this when a task is no longer relevant or was added by mistake.",
+      parameters: {
+        type: "object",
+        properties: {
+          taskId: { type: "string", description: "The ID of the task to delete" },
+        },
+        required: ["taskId"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "summarize_url_tool",
+      description:
+        "Fetch a URL, extract its readable content (title, headings, paragraphs), and return a structured summary. Use this to quickly understand what a web page is about without reading the entire page.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "The URL to fetch and summarize" },
+        },
+        required: ["url"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "api_test_tool",
+      description:
+        "Make an HTTP request to test an API endpoint. Supports GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS with custom headers, JSON/Form/Text bodies, query parameters, and optional response assertions (expectStatus, expectBodyContains). Returns structured results including status code, response headers, parsed body, and timing. Use this to probe, debug, or verify any REST/HTTP API during development or testing.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "The full URL of the API endpoint to test" },
+          method: {
+            type: "string",
+            enum: ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+            description: "HTTP method to use",
+          },
+          queryParams: {
+            type: "object",
+            description: "Optional query parameters to append to the URL as key-value pairs",
+            additionalProperties: { type: "string" },
+          },
+          headers: {
+            type: "object",
+            description: "Optional request headers as key-value pairs (e.g. {\"Authorization\": \"Bearer xxx\"})",
+            additionalProperties: { type: "string" },
+          },
+          body: {
+            type: "string",
+            description: "Request body as a string. For JSON, pass a JSON string. For form data, pass URL-encoded string. Omit for GET/HEAD/DELETE requests with no body.",
+          },
+          bodyType: {
+            type: "string",
+            enum: ["json", "text", "form"],
+            description: "How to encode the body. 'json' sets Content-Type: application/json, 'form' sets application/x-www-form-urlencoded, 'text' sets text/plain. Defaults to 'json' if body looks like JSON, otherwise 'text'.",
+          },
+          maxBodyLength: {
+            type: "number",
+            description: "Max response body characters before truncation (default: 10000)",
+          },
+          timeout: {
+            type: "number",
+            description: "Request timeout in milliseconds (default: 30000)",
+          },
+          expectStatus: {
+            type: "number",
+            description: "Assert the response status matches this value. If it doesn't match, the tool returns an error with the actual status and body for debugging.",
+          },
+          expectBodyContains: {
+            type: "string",
+            description: "Assert the response body (as string) contains this substring. If it doesn't, the tool returns an error with the actual body for debugging.",
+          },
+        },
+        required: ["url", "method"],
       },
     },
   },

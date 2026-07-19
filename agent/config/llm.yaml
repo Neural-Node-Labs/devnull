@@ -39,6 +39,7 @@ overrides:
 
 # Fallback provider if DEEPSEEK_API_KEY is unset or the API errors out.
 fallback:
-  provider: anthropic
-  model: claude-sonnet-5
-  api_key_env: ANTHROPIC_API_KEY
+  provider: deepseek
+  base_url: https://api.deepseek.com/v1
+  model: deepseek-v4-flash
+  api_key_env: DEEPSEEK_API_KEY

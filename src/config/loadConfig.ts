@@ -5,8 +5,8 @@ import "dotenv/config";
 
 export interface LlmConfig {
   provider: string;
-  base_url: string;
-  endpoint: string;
+  base_url?: string; // required for openai-compatible providers (deepseek, etc); unused for anthropic
+  endpoint?: string; // required for openai-compatible providers (deepseek, etc); unused for anthropic
   model: string;
   api_key_env: string;
   max_tokens: number;
@@ -14,7 +14,7 @@ export interface LlmConfig {
   thinking?: boolean;
   reasoning_effort?: "high" | "max"; // only meaningful when thinking is enabled
   overrides?: Record<string, { model?: string; temperature?: number; thinking?: boolean; reasoning_effort?: "high" | "max" }>;
-  fallback?: { provider: string; model: string; api_key_env: string };
+  fallback?: { provider: string; model: string; api_key_env: string; base_url?: string; endpoint?: string };
 }
 
 const DEFAULT_CONFIG_PATH = path.join(process.cwd(), "agent", "config", "llm.yaml");
@@ -57,3 +57,4 @@ export function resolveModelForSkill(config: LlmConfig, skillName?: string) {
     reasoningEffort: override?.reasoning_effort ?? config.reasoning_effort,
   };
 }
+

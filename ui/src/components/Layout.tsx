@@ -13,9 +13,10 @@ export function Layout() {
       }}
     >
       <Navbar />
-      <main style={{ padding: "24px", maxWidth: "1200px", margin: "0 auto" }}>
+      <main className="devnull-main" style={{ padding: "24px", maxWidth: "1200px", margin: "0 auto" }}>
         <Outlet />
       </main>
     </div>
   );
 }
+

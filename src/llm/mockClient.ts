@@ -21,3 +21,4 @@ export class MockLlmClient implements LlmClient {
 export function toolCall(id: string, name: string, args: Record<string, unknown>): ToolCall {
   return { id, type: "function", function: { name, arguments: JSON.stringify(args) } };
 }
+

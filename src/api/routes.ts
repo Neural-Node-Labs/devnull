@@ -8,6 +8,11 @@ import { FileTelemetry } from "../telemetry/logger.js";
 import { loadLlmConfig } from "../config/loadConfig.js";
 import { SkillRegistry } from "../core/skillRegistry.js";
 import { authMiddleware, verifyLogin, generateToken, revokeToken, isAuthEnabled } from "./auth.js";
+import { registerProjectRoutes } from "./projectRoutes.js";
+import { registerPlanRoutes } from "./planRoutes.js";
+import { listProjects, getProject } from "./projectStore.js";
+import { hasStoredApiKey, setStoredApiKey, clearStoredApiKey, applyStoredApiKey } from "./llmKeyStore.js";
+import { readTaskHistory } from "../core/taskHistory.js";
 import type {
   ApiResponse,
   ChatRequest,
@@ -33,6 +38,25 @@ const pkg = JSON.parse(
 
 export function createRouter(): Router {
   const router = Router();
+  registerProjectRoutes(router);
+  registerPlanRoutes(router);
+
+  /**
+   * Resolves which directory a task should run against: the explicitly requested project, else
+   * the currently active project, else the server's own cwd as a legacy fallback for anyone
+   * running devnull without ever having added a project. Previously this was just hardcoded to
+   * process.cwd() everywhere, silently ignoring whatever the user had picked in the Projects UI.
+   */
+  function resolveProjectCwd(projectId?: string): { cwd: string; error?: string } {
+    if (projectId) {
+      const project = getProject(projectId);
+      if (!project) return { cwd: process.cwd(), error: `Project not found: ${projectId}` };
+      return { cwd: project.path };
+    }
+    const active = listProjects().find((p) => p.active);
+    if (active) return { cwd: active.path };
+    return { cwd: process.cwd() };
+  }
 
   // ─── Login (no auth required) ──────────────────────────────────────────
   router.post("/login", (req: Request, res: Response) => {
@@ -87,10 +111,7 @@ export function createRouter(): Router {
     res.json(body);
   });
 
-  // All other routes require auth
-  router.use(authMiddleware);
-
-  // ─── Health ────────────────────────────────────────────────────────────
+  // ─── Health (no auth required — used by Docker healthcheck) ────────────
   router.get("/health", (_req: Request, res: Response) => {
     const data: HealthResponse = {
       status: "ok",
@@ -101,9 +122,12 @@ export function createRouter(): Router {
     res.json(body);
   });
 
+  // All other routes require auth
+  router.use(authMiddleware);
+
   // ─── Chat / Task Execution ─────────────────────────────────────────────
   router.post("/chat", async (req: Request, res: Response) => {
-    const { task, planMode } = req.body as ChatRequest;
+    const { task, planMode, leanToken, projectId, maxIterations, isolatedWorkspace, continueOnLimit } = req.body as ChatRequest;
 
     if (!task || typeof task !== "string" || task.trim().length === 0) {
       const body: ApiResponse = { success: false, error: "Missing or empty 'task' field" };
@@ -111,15 +135,32 @@ export function createRouter(): Router {
       return;
     }
 
-    const cwd = process.cwd();
+    const { cwd, error: projectError } = resolveProjectCwd(projectId);
+    if (projectError) {
+      res.status(404).json({ success: false, error: projectError } as ApiResponse);
+      return;
+    }
     const telemetry = new FileTelemetry(cwd);
     const llmConfig = loadLlmConfig();
+    applyStoredApiKey(llmConfig);
     const llm = new DeepSeekClient(llmConfig, telemetry);
 
-    // In API context, disable interactive prompts (no TTY available).
-    // Plan mode will auto-approve and the plan will be returned in the response.
-    const opts: OrchestratorOptions = { cwd, interactive: false };
+    // In API context, disable interactive prompts (no TTY available). Plan mode auto-approves
+    // and the plan is returned in the response. Iteration-limit hits stop and report rather
+    // than auto-continuing forever (the CLI's default) — an API caller has no way to answer an
+    // interactive "continue?" prompt, so silently looping is the wrong default here.
+    // When continueOnLimit is true (UI's "Continue" button), the orchestrator auto-continues
+    // past the iteration limit instead of stopping.
+    const opts: OrchestratorOptions = {
+      cwd,
+      interactive: false,
+      onIterationLimitReached: async () => false,
+    };
     if (planMode) opts.planMode = planMode;
+    if (leanToken) opts.leanToken = true;
+    if (maxIterations) opts.maxIterations = maxIterations;
+    if (isolatedWorkspace) opts.isolatedWorkspace = true;
+    if (continueOnLimit) opts.continueOnLimit = true;
 
     const orchestrator = new ReActOrchestrator(llm, telemetry, opts);
 
@@ -141,14 +182,31 @@ export function createRouter(): Router {
           task: task.trim(),
           plan,
           planMode: planMode ?? "always",
+          leanToken: leanToken ?? false,
+          projectId,
+          maxIterations,
+          isolatedWorkspace: isolatedWorkspace ?? false,
+          continueOnLimit: continueOnLimit ?? false,
           createdAt: Date.now(),
         });
       }
 
       const result = await orchestrator.run(task.trim());
-      const data: ChatResponse = { result, iterations: 0 };
+      const outcome = orchestrator.getLastOutcome();
+      const data: ChatResponse = {
+        result,
+        iterations: 0,
+        usage: orchestrator.getCumulativeUsage(),
+        healthScore: orchestrator.getHealthScore(),
+      };
       if (plan) data.plan = plan;
       if (sessionId) data.sessionId = sessionId;
+      if (outcome !== "completed") {
+        data.limitation =
+          outcome === "iteration_limit"
+            ? "The task did not finish within the iteration limit."
+            : "The plan was not approved, so no changes were made.";
+      }
       const body: ApiResponse<ChatResponse> = { success: true, data };
       res.json(body);
     } catch (err: unknown) {
@@ -166,13 +224,18 @@ export function createRouter(): Router {
     task: string;
     plan: string;
     planMode: "auto" | "always" | "never";
+    leanToken: boolean;
+    projectId?: string;
+    maxIterations?: number;
+    isolatedWorkspace: boolean;
+    continueOnLimit?: boolean;
     createdAt: number;
   }
   const planSessions = new Map<string, PlanSession>();
 
   // ─── Plan Generation (no execution) ────────────────────────────────────
   router.post("/chat/plan", async (req: Request, res: Response) => {
-    const { task, planMode } = req.body as PlanRequest;
+    const { task, planMode, leanToken, projectId, maxIterations, isolatedWorkspace, continueOnLimit } = req.body as PlanRequest;
 
     if (!task || typeof task !== "string" || task.trim().length === 0) {
       const body: ApiResponse = { success: false, error: "Missing or empty 'task' field" };
@@ -180,12 +243,20 @@ export function createRouter(): Router {
       return;
     }
 
-    const cwd = process.cwd();
+    const { cwd, error: projectError } = resolveProjectCwd(projectId);
+    if (projectError) {
+      res.status(404).json({ success: false, error: projectError } as ApiResponse);
+      return;
+    }
     const telemetry = new FileTelemetry(cwd);
     const llmConfig = loadLlmConfig();
+    applyStoredApiKey(llmConfig);
     const llm = new DeepSeekClient(llmConfig, telemetry);
 
     const opts: OrchestratorOptions = { cwd, planMode: planMode ?? "always" };
+    if (leanToken) opts.leanToken = true;
+    if (maxIterations) opts.maxIterations = maxIterations;
+    if (isolatedWorkspace) opts.isolatedWorkspace = true;
     const orchestrator = new ReActOrchestrator(llm, telemetry, opts);
 
     try {
@@ -195,6 +266,11 @@ export function createRouter(): Router {
         task: task.trim(),
         plan,
         planMode: planMode ?? "always",
+        leanToken: leanToken ?? false,
+        projectId,
+        maxIterations,
+        isolatedWorkspace: isolatedWorkspace ?? false,
+        continueOnLimit: continueOnLimit ?? false,
         createdAt: Date.now(),
       });
 
@@ -229,17 +305,38 @@ export function createRouter(): Router {
     // Clean up the session so it can't be executed twice
     planSessions.delete(sessionId);
 
-    const cwd = process.cwd();
+    const { cwd, error: projectError } = resolveProjectCwd(session.projectId);
+    if (projectError) {
+      res.status(404).json({ success: false, error: projectError } as ApiResponse);
+      return;
+    }
     const telemetry = new FileTelemetry(cwd);
     const llmConfig = loadLlmConfig();
+    applyStoredApiKey(llmConfig);
     const llm = new DeepSeekClient(llmConfig, telemetry);
 
-    const opts: OrchestratorOptions = { cwd, planMode: "never" }; // Plan already done
+    const opts: OrchestratorOptions = {
+      cwd,
+      planMode: "never", // Plan already done
+      interactive: false,
+      onIterationLimitReached: async () => false,
+    };
+    if (session.leanToken) opts.leanToken = true;
+    if (session.maxIterations) opts.maxIterations = session.maxIterations;
+    if (session.isolatedWorkspace) opts.isolatedWorkspace = true;
+    if (session.continueOnLimit) opts.continueOnLimit = true;
     const orchestrator = new ReActOrchestrator(llm, telemetry, opts);
 
     try {
       const result = await orchestrator.run(session.task);
+      const outcome = orchestrator.getLastOutcome();
       const data: ExecuteResponse = { result, iterations: 0 };
+      if (outcome !== "completed") {
+        data.limitation =
+          outcome === "iteration_limit"
+            ? "The task did not finish within the iteration limit."
+            : "The plan was not approved, so no changes were made.";
+      }
       const body: ApiResponse<ExecuteResponse> = { success: true, data };
       res.json(body);
     } catch (err: unknown) {
@@ -311,6 +408,58 @@ export function createRouter(): Router {
     }));
     const body: ApiResponse<SkillListEntry[]> = { success: true, data: skills };
     res.json(body);
+  });
+
+  // ─── Task History (read-only; the agent queries this itself via task_history_tool —
+  // this endpoint is purely so the UI can also show it, e.g. a "recent tasks" list) ───────
+  router.get("/task-history", (req: Request, res: Response) => {
+    const { cwd } = resolveProjectCwd(req.query.projectId as string | undefined);
+    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 10;
+    const tasks = readTaskHistory(cwd, limit);
+    const body: ApiResponse = { success: true, data: { tasks } };
+    res.json(body);
+  });
+
+  // ─── Task History Logs — get telemetry logs for a specific task ───────────────────────
+  router.get("/task-history/:taskId/logs", async (req: Request, res: Response) => {
+    const taskId = String(req.params.taskId);
+    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 100;
+
+    // Try to get logs from PostgreSQL if available
+    try {
+      const { PostgresTelemetry } = await import("../telemetry/postgresTelemetry.js");
+      const pgTelemetry = new PostgresTelemetry();
+      const logs = await pgTelemetry.getLogsForTask(taskId, limit);
+      const body: ApiResponse = { success: true, data: { taskId, logs } };
+      res.json(body);
+    } catch {
+      // Fallback: return empty — file-based telemetry doesn't have task-level indexing
+      const body: ApiResponse = { success: true, data: { taskId, logs: [], note: "PostgreSQL telemetry not available. Enable DATABASE_URL for task-level log queries." } };
+      res.json(body);
+    }
+  });
+
+  // ─── LLM API Key ────────────────────────────────────────────────────────
+  // Never returns the actual key — only whether one is set — so a GET can't leak it back out
+  // over the wire to anyone who can read the response.
+  router.get("/settings/llm-key", (_req: Request, res: Response) => {
+    const body: ApiResponse = { success: true, data: { hasKey: hasStoredApiKey() } };
+    res.json(body);
+  });
+
+  router.put("/settings/llm-key", (req: Request, res: Response) => {
+    const { apiKey } = req.body as { apiKey?: string };
+    if (!apiKey || typeof apiKey !== "string" || apiKey.trim().length === 0) {
+      res.status(400).json({ success: false, error: "'apiKey' is required" } as ApiResponse);
+      return;
+    }
+    setStoredApiKey(apiKey.trim());
+    res.json({ success: true, data: { hasKey: true } } as ApiResponse);
+  });
+
+  router.delete("/settings/llm-key", (_req: Request, res: Response) => {
+    clearStoredApiKey();
+    res.json({ success: true, data: { hasKey: false } } as ApiResponse);
   });
 
   // ─── User Management ───────────────────────────────────────────────────
@@ -428,3 +577,4 @@ export function createRouter(): Router {
 
   return router;
 }
+

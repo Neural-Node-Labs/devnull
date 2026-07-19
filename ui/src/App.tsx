@@ -12,6 +12,9 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { AdminPage } from "./pages/AdminPage";
 import DiagnosticsPage from "./pages/DiagnosticsPage";
 import ProjectsPage from "./pages/ProjectsPage";
+import { PlansPage } from "./pages/PlansPage";
+import { PlanDetailPage } from "./pages/PlanDetailPage";
+import { NotFoundPage } from "./pages/NotFoundPage";
 
 export default function App() {
   return (
@@ -33,6 +36,8 @@ export default function App() {
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/diagnostics" element={<DiagnosticsPage />} />
               <Route path="/projects" element={<ProjectsPage />} />
+              <Route path="/plans" element={<PlansPage />} />
+              <Route path="/plans/:id" element={<PlanDetailPage />} />
               <Route
                 path="/admin"
                 element={
@@ -41,6 +46,7 @@ export default function App() {
                   </ProtectedRoute>
                 }
               />
+              <Route path="*" element={<NotFoundPage />} />
             </Route>
           </Routes>
         </ThemeProvider>
@@ -48,3 +54,4 @@ export default function App() {
     </BrowserRouter>
   );
 }
+

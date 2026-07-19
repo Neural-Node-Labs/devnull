@@ -3,7 +3,7 @@ import path from "node:path";
 import yaml from "js-yaml";
 import { LoadedSkill, SkillHeader } from "./types.js";
 
-const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/;
+const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/;
 
 /**
  * Registration manager for the Special Evolution skill system.
@@ -101,3 +101,4 @@ export class SkillRegistry {
     return [...this.headers.values()];
   }
 }
+

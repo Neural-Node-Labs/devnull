@@ -1,4 +1,32 @@
 services:
+  # ─── PostgreSQL ──────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: devnull-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-devnull}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devnull_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-devnull}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-devnull} -d ${POSTGRES_DB:-devnull}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: "512M"
+        reservations:
+          cpus: "0.25"
+          memory: "256M"
+
   # ─── API Service ─────────────────────────────────────────────────────────
   api:
     build:
@@ -14,6 +42,7 @@ services:
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin1234}
       - DEVNULL_API_PORT=3001
       - NODE_ENV=${NODE_ENV:-production}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-devnull}:${POSTGRES_PASSWORD:-devnull_pass}@postgres:5432/${POSTGRES_DB:-devnull}
     ports:
       - "3001:3001"
     volumes:
@@ -21,6 +50,9 @@ services:
       - .:/workspace
     working_dir: /workspace
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
 
     # ------------------------------------------------------------------
     # Resource limits — prevent the container from starving the host.
@@ -52,8 +84,8 @@ services:
     #   docker compose run --rm api --task "fix the bug"
     #   docker compose run --rm api --chat
     # ------------------------------------------------------------------
-    profiles:
-      - serve
+#    profiles:
+#      - serve
 
     # Start the API server (serve profile)
     command:
@@ -96,7 +128,7 @@ services:
     # Healthcheck
     # ------------------------------------------------------------------
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:80/"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -106,5 +138,9 @@ services:
     # Profiles:
     #   serve     — starts the UI alongside the API
     # ------------------------------------------------------------------
-    profiles:
-      - serve
+#    profiles:
+#      - serve
+
+volumes:
+  pgdata:
+
