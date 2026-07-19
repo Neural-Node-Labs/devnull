@@ -5,7 +5,7 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "devnull": "./dist/cli/index.js"
+    "devnull": "dist/cli/index.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -35,5 +35,11 @@
     "@types/pg": "^8.20.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.5.4"
-  }
+  },
+  "main": "gen_test.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "keywords": [],
+  "author": ""
 }
