@@ -15,9 +15,10 @@ FROM ${NODE_IMAGE} AS builder
 WORKDIR /build
 
 # Copy dependency manifests first for layer caching
+# Use npm install (not npm ci) because package-lock.json may have
+# platform-specific optional deps that differ between build host and target.
 COPY package.json package-lock.json* ./
 RUN npm install
-RUN npm ci
 
 # Copy source and compile
 COPY tsconfig.json ./
@@ -48,8 +49,11 @@ RUN apk add --no-cache \
 WORKDIR /opt/devnull
 
 # Install production Node dependencies
+# Use npm install instead of npm ci because package-lock.json may have
+# platform-specific optional deps (e.g. @emnapi/* for @rolldown) that differ
+# between the build host (Windows) and the Docker target (Linux).
 COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm install --omit=dev && npm cache clean --force
 
 # Copy compiled output from builder
 COPY --from=builder /build/dist ./dist

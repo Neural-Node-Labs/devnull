@@ -2,7 +2,8 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs";
-import { globTool } from "./globTool.js";
+import fg from "fast-glob";
+import { loadIgnoreRules } from "../indexing/ignoreRules.js";
 import type { SshTarget, SshResult } from "./sshTool.js";
 
 // Dynamic getters for sshTool functions to avoid stale module cache.
@@ -336,7 +337,11 @@ export async function deployWorkspaceViaSsh(
     }
 
     // ── Step 3: Tar the workspace ──────────────────────────────────────────
-    const files = await globTool("**/*", cwd);
+    // Use fast-glob directly with dot:true so dotfiles (.env.example, .dockerignore, etc.)
+    // are included in the deployment tarball. globTool has dot:false which is correct for
+    // source-file searches but wrong for deployment where config files matter.
+    const ignore = loadIgnoreRules(cwd);
+    const files = await fg("**/*", { cwd, ignore, dot: true, onlyFiles: true });
     const tarPath = path.join(os.tmpdir(), `devnull-deploy-${Date.now()}.tar.gz`);
     report.tarBytes = await tarWorkspace(cwd, files, tarPath);
 
