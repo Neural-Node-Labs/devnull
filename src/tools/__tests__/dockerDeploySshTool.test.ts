@@ -54,39 +54,55 @@ interface ServiceStatus {
 
 function parseServiceStatuses(raw: string): ServiceStatus[] {
   const services: ServiceStatus[] = [];
+  const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
 
-  // Try JSON format first
-  try {
-    const parsed = JSON.parse(raw);
-    const arr = Array.isArray(parsed) ? parsed : [parsed];
-    for (const item of arr) {
-      services.push({
-        name: item.Name || item.name || "unknown",
-        status: item.Status || item.status || "unknown",
-        health: item.Health || item.health || null,
-        image: item.Image || item.image || "unknown",
-        ports: item.Ports || item.ports || "",
-      });
+  // Try NDJSON format first (docker compose ps --format json outputs one JSON object per line)
+  let allJson = true;
+  const jsonLines: string[] = [];
+  for (const line of lines) {
+    if (line === "NO_COMPOSE_PS") { allJson = false; break; }
+    if (line.startsWith("{")) {
+      jsonLines.push(line);
+    } else {
+      allJson = false;
+      break;
     }
-    return services;
-  } catch {
-    // Fall back to tab-separated format
-    for (const line of raw.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("NAME") || trimmed === "NO_COMPOSE_PS") continue;
-      const parts = trimmed.split("\t");
-      if (parts.length >= 2) {
+  }
+
+  if (allJson && jsonLines.length > 0) {
+    for (const line of jsonLines) {
+      try {
+        const item = JSON.parse(line);
         services.push({
-          name: parts[0],
-          status: parts[1],
-          health: null,
-          image: "",
-          ports: parts[2] || "",
+          name: item.Name || item.name || "unknown",
+          status: item.Status || item.status || "unknown",
+          health: item.Health || item.health || null,
+          image: item.Image || item.image || "unknown",
+          ports: item.Ports || item.ports || "",
         });
+      } catch {
+        services.length = 0;
+        break;
       }
     }
-    return services;
+    if (services.length > 0) return services;
   }
+
+  // Fall back to tab-separated format
+  for (const line of lines) {
+    if (line.startsWith("NAME") || line === "NO_COMPOSE_PS") continue;
+    const parts = line.split("\t");
+    if (parts.length >= 2) {
+      services.push({
+        name: parts[0],
+        status: parts[1],
+        health: null,
+        image: "",
+        ports: parts[2] || "",
+      });
+    }
+  }
+  return services;
 }
 
 function allServicesHealthy(services: ServiceStatus[]): boolean {
@@ -185,12 +201,12 @@ describe("buildPreCheckCommand", () => {
 });
 
 describe("parseServiceStatuses", () => {
-  it("parses JSON format from docker compose ps", () => {
-    const json = JSON.stringify([
-      { Name: "app-api", Status: "Up 2 minutes", Health: "healthy", Image: "app:latest", Ports: "3001" },
-      { Name: "app-ui", Status: "Up 2 minutes", Health: "healthy", Image: "ui:latest", Ports: "8080" },
-    ]);
-    const services = parseServiceStatuses(json);
+  it("parses NDJSON format (one JSON object per line) from docker compose ps", () => {
+    const ndjson = [
+      JSON.stringify({ Name: "app-api", Status: "Up 2 minutes", Health: "healthy", Image: "app:latest", Ports: "3001" }),
+      JSON.stringify({ Name: "app-ui", Status: "Up 2 minutes", Health: "healthy", Image: "ui:latest", Ports: "8080" }),
+    ].join("\n");
+    const services = parseServiceStatuses(ndjson);
     assert.equal(services.length, 2);
     assert.equal(services[0].name, "app-api");
     assert.equal(services[0].status, "Up 2 minutes");
@@ -199,7 +215,7 @@ describe("parseServiceStatuses", () => {
     assert.equal(services[1].name, "app-ui");
   });
 
-  it("parses single JSON object (not array)", () => {
+  it("parses single JSON object (single line, not array)", () => {
     const json = JSON.stringify({ Name: "app-api", Status: "Up", Health: null, Image: "app:latest", Ports: "" });
     const services = parseServiceStatuses(json);
     assert.equal(services.length, 1);
@@ -230,6 +246,21 @@ describe("parseServiceStatuses", () => {
   it("returns empty array for empty input", () => {
     const services = parseServiceStatuses("");
     assert.equal(services.length, 0);
+  });
+
+  it("parses real-world NDJSON output from docker compose ps", () => {
+    const ndjson = [
+      JSON.stringify({ Command: "node /opt/devnull/d…", CreatedAt: "2026-07-19 17:56:17 +0000 UTC", ExitCode: 0, Health: "healthy", ID: "abc123", Image: "devnull-api:latest", Labels: "com.docker.compose.project=devnull", LocalVolumes: "0", Mounts: "/root/devnull", Name: "devnull-api", Names: "devnull-api", Networks: "devnull_default", Ports: "0.0.0.0:3001->3001/tcp", Project: "devnull", Publishers: [{ URL: "0.0.0.0", TargetPort: 3001, PublishedPort: 3001, Protocol: "tcp" }], RunningFor: "5 minutes ago", Service: "api", Size: "0B", State: "running", Status: "Up 5 minutes (healthy)" }),
+      JSON.stringify({ Command: "docker-entrypoint.s…", CreatedAt: "2026-07-19 17:55:13 +0000 UTC", ExitCode: 0, Health: "healthy", ID: "def456", Image: "postgres:16-alpine", Labels: "", LocalVolumes: "1", Mounts: "devnull_pgdata", Name: "devnull-postgres", Names: "devnull-postgres", Networks: "devnull_default", Ports: "0.0.0.0:5432->5432/tcp", Project: "devnull", Publishers: [{ URL: "0.0.0.0", TargetPort: 5432, PublishedPort: 5432, Protocol: "tcp" }], RunningFor: "6 minutes ago", Service: "postgres", Size: "0B", State: "running", Status: "Up 6 minutes (healthy)" }),
+    ].join("\n");
+    const services = parseServiceStatuses(ndjson);
+    assert.equal(services.length, 2);
+    assert.equal(services[0].name, "devnull-api");
+    assert.equal(services[0].status, "Up 5 minutes (healthy)");
+    assert.equal(services[0].health, "healthy");
+    assert.equal(services[1].name, "devnull-postgres");
+    assert.equal(services[1].status, "Up 6 minutes (healthy)");
+    assert.equal(services[1].health, "healthy");
   });
 });
 

@@ -10,3 +10,35 @@
 - [ ] **Fix Tool & Document**: If tool has a bug (e.g., missing `sshpass` support, incorrect env-var resolution), fix the tool source code. Update `tasks/lessons.md` with the pattern and fix.
 - [ ] **Rollback Plan**: Document rollback steps in `artifact.md`: stop containers, pull previous images, restart. Verify rollback works by simulating a failure.
 ```
+
+## Review
+---
+
+## ✅ Deploy Complete — `docker_deploy_ssh_tool` Reports `success: true`
+
+The deploy tool now reports **`success: true`** with all 3 services running and healthy:
+
+| Service | Status | Health |
+|---------|--------|--------|
+| devnull-api | Up 18 seconds | healthy |
+| devnull-postgres | Up 2 minutes | healthy |
+| devnull-ui | Up 12 seconds | healthy |
+
+### RCA & Fixes Applied
+
+1. **`globTool` had `dot: false`** — excluded `.env.example` from deployment tarball. Fixed by using `fast-glob` directly with `dot: true` in `dockerDeploySshTool.ts`.
+
+2. **`npm ci` fails cross-platform** — `package-lock.json` has platform-specific optional deps. Fixed by replacing `npm ci` with `npm install` in Dockerfile.
+
+3. **CPU limits exceeded** — remote has 1 CPU, compose requested 2. Fixed all limits to `"0.5"` max.
+
+4. **Bind mount permission denied** — `/workspace` bind-mounted from host dir owned by root, container runs as `devnull` (UID 100). Fixed by `chown` on host and pre-creating `.log` dir in Dockerfile.
+
+5. **NDJSON parsing bug in health check** — `docker compose ps --format json` outputs one JSON object per line (NDJSON), not a JSON array. `parseServiceStatuses` failed to parse it, causing health check to always time out. Fixed by parsing each line individually as JSON.
+
+### Verification
+- API: `http://86.38.217.69:3001/api/v1/health` → `{"status":"ok"}`
+- UI: `http://86.38.217.69:8080/` → HTTP 200
+
+### Lessons Documented
+All findings added to `tasks/lessons.md`.

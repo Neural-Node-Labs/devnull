@@ -161,39 +161,56 @@ function buildPreCheckCommand(): string {
 
 function parseServiceStatuses(raw: string): ServiceStatus[] {
   const services: ServiceStatus[] = [];
+  const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
 
-  // Try JSON format first (docker compose ps --format json)
-  try {
-    const parsed = JSON.parse(raw);
-    const arr = Array.isArray(parsed) ? parsed : [parsed];
-    for (const item of arr) {
-      services.push({
-        name: item.Name || item.name || "unknown",
-        status: item.Status || item.status || "unknown",
-        health: item.Health || item.health || null,
-        image: item.Image || item.image || "unknown",
-        ports: item.Ports || item.ports || "",
-      });
+  // Try NDJSON format first (docker compose ps --format json outputs one JSON object per line)
+  let allJson = true;
+  const jsonLines: string[] = [];
+  for (const line of lines) {
+    if (line === "NO_COMPOSE_PS") { allJson = false; break; }
+    if (line.startsWith("{")) {
+      jsonLines.push(line);
+    } else {
+      allJson = false;
+      break;
     }
-    return services;
-  } catch {
-    // Fall back to tab-separated format
-    for (const line of raw.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("NAME") || trimmed === "NO_COMPOSE_PS") continue;
-      const parts = trimmed.split("\t");
-      if (parts.length >= 2) {
+  }
+
+  if (allJson && jsonLines.length > 0) {
+    for (const line of jsonLines) {
+      try {
+        const item = JSON.parse(line);
         services.push({
-          name: parts[0],
-          status: parts[1],
-          health: null,
-          image: "",
-          ports: parts[2] || "",
+          name: item.Name || item.name || "unknown",
+          status: item.Status || item.status || "unknown",
+          health: item.Health || item.health || null,
+          image: item.Image || item.image || "unknown",
+          ports: item.Ports || item.ports || "",
         });
+      } catch {
+        // If any line fails JSON parse, fall through to tab-separated
+        services.length = 0;
+        break;
       }
     }
-    return services;
+    if (services.length > 0) return services;
   }
+
+  // Fall back to tab-separated format
+  for (const line of lines) {
+    if (line.startsWith("NAME") || line === "NO_COMPOSE_PS") continue;
+    const parts = line.split("\t");
+    if (parts.length >= 2) {
+      services.push({
+        name: parts[0],
+        status: parts[1],
+        health: null,
+        image: "",
+        ports: parts[2] || "",
+      });
+    }
+  }
+  return services;
 }
 
 function allServicesHealthy(services: ServiceStatus[]): boolean {
