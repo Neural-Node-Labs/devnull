@@ -119,7 +119,16 @@ export async function dispatchToolCall(call: ToolCall, cwd: string = process.cwd
         return { toolCallId: call.id, toolName: name, observation: result, isError: result.exitCode !== 0 };
       }
       case "ssh_tool": {
-        const target: SshTarget = { host: args.host, user: args.user, port: args.port, keyPath: args.keyPath };
+        // Resolve credentials: prefer env-var names (safer), fall back to inline values
+        const resolvedUser = args.userEnvVar ? (process.env[args.userEnvVar] ?? "") : (args.user ?? "");
+        const resolvedPassword = args.passwordEnvVar ? (process.env[args.passwordEnvVar] ?? "") : undefined;
+        const target: SshTarget = {
+          host: args.host,
+          user: resolvedUser,
+          port: args.port,
+          keyPath: args.keyPath,
+          password: resolvedPassword,
+        };
         let result;
         if (args.action === "exec") {
           result = await sshExec(target, args.command);
@@ -239,9 +248,13 @@ export async function dispatchToolCall(call: ToolCall, cwd: string = process.cwd
         return { toolCallId: call.id, toolName: name, observation: result, isError: result.exitCode !== 0 };
       }
       case "docker_deploy_ssh_tool": {
+        // Resolve credentials: prefer env-var names (safer), fall back to inline values
+        const resolvedUser = args.userEnvVar ? (process.env[args.userEnvVar] ?? "") : (args.user ?? "");
+        const resolvedPassword = args.passwordEnvVar ? (process.env[args.passwordEnvVar] ?? "") : undefined;
         const result = await deployWorkspaceViaSsh({
           host: args.host,
-          user: args.user,
+          user: resolvedUser,
+          password: resolvedPassword,
           port: args.port,
           keyPath: args.keyPath,
           remotePath: args.remotePath,

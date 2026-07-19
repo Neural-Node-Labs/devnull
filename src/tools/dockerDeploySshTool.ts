@@ -13,6 +13,7 @@ export interface DeployOptions {
   user: string;
   port?: number;
   keyPath?: string;
+  password?: string;
 
   /** Remote directory to deploy into */
   remotePath: string;
@@ -273,6 +274,7 @@ export async function deployWorkspaceViaSsh(
     user: opts.user,
     port: opts.port,
     keyPath: opts.keyPath,
+    password: opts.password,
   };
 
   const remotePath = opts.remotePath;

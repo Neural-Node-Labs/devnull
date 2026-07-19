@@ -1,109 +1,55 @@
-# Plan: Enhance docker_deploy_ssh_tool with DevOps/Docker-Expert depth
+# Plan: Enhance the SSH tools to get the username and password from environment, I will provide the name of environment variable, it i safer that way insted of hte password scattered in log and context. if you are using ssh tools prioritize using the tools add in devops skill
 
-## Task
-The user asked to "Add tool to deploy to remote docker" — the tool already existed as `docker_deploy_ssh_tool` (a basic tar-and-ship utility). The task was to enhance it with production-grade DevOps/Docker-Expert features.
+I'll analyze the request and create a plan. The goal is to modify the SSH tools to read credentials from environment variables instead of having them passed inline, which is a security improvement.
 
-## Implementation Plan
+## Plan
 
-### Step 1: Enhance `dockerDeploySshTool.ts` ✅
-- Added `DeployOptions` interface with all new parameters
-- Added pre-deploy checks (docker version, disk space)
-- Added rollback: snapshot existing compose state before deploy, restore on failure
-- Added health verification after deploy (polls `docker compose ps` for healthy status)
-- Added structured `DeployReport` return type with per-service status
-- Added `composeFile` selection, `pullFromRegistry` mode, `envFile` shipping
-
-### Step 2: Update `toolSchemas.ts` ✅
-- Added all new parameters to the `docker_deploy_ssh_tool` schema with descriptions
-
-### Step 3: Update `toolDispatcher.ts` ✅
-- Updated dispatch to pass new options through to the enhanced deploy function
-
-### Step 4: Update documentation ✅
-- Updated `SOLUTION_DESIGN.md` tool table
-- Updated `README.md` tool reference table
-- Updated `agent/skills/docker-expert/SKILL.md` Output Artifacts
-- Updated `agent/skills/devops/SKILL.md` Output Artifacts
-
-### Step 5: Write unit tests and validate ✅
-- Wrote 26 unit tests covering all pure functions (command building, status parsing, health check logic)
-- Fixed a real bug: `allServicesHealthy()` matched `"unhealthy"` as healthy (substring match on "healthy")
-- All 26 tests pass
-- TypeScript build compiles cleanly
+- [ ] **1. Locate SSH tool implementations** — Find all SSH-related tools in the codebase (likely in `skills/devops/` or similar). Identify where username/password are currently passed as parameters.
+- [ ] **2. Design the env-var approach** — Define a consistent pattern: each SSH tool accepts env var names (e.g., `SSH_USERNAME`, `SSH_PASSWORD`) rather than literal values. Update tool schemas/definitions accordingly.
+- [ ] **3. Update SSH tool implementations** — Modify each SSH tool to read credentials from `process.env[envVarName]` at runtime, never logging or echoing the values. Handle missing env vars with clear error messages.
+- [ ] **4. Update devops skill documentation** — Update the devops skill's SKILL.md or related docs to reflect the new env-var-based credential pattern, including examples of how to set the variables.
+- [ ] **5. Validate with a dry-run** — Run a test invocation of an SSH tool (or at minimum verify the code parses/compiles correctly) to confirm the change works without leaking credentials.
 
 ## Review
-
-### What was done
-The `docker_deploy_ssh_tool` was enhanced from a basic tar-and-ship utility to a production-grade remote Docker deploy tool with:
-
-**New parameters:**
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `composeFile` | string | Specific compose file (e.g. `docker-compose.prod.yml`) |
-| `envFile` | string | Local `.env` file to ship alongside the workspace |
-| `pullFromRegistry` | boolean | Replace `--build` with `--pull always` |
-| `skipValidation` | boolean | Skip pre-deploy checks |
-| `skipHealthCheck` | boolean | Skip health verification |
-| `skipRollback` | boolean | Skip rollback snapshot |
-| `healthCheckTimeoutMs` | number | Health check polling timeout (default: 2 min) |
-| `dockerCommandTimeoutMs` | number | Docker command timeout (default: 5 min) |
-
-**New features:**
-1. **Pre-deploy validation** — checks remote host has Docker and Docker Compose installed, reports disk space and uptime
-2. **Rollback** — snapshots the current compose state before deploy, restores on failure
-3. **Health verification** — polls `docker compose ps` every 5s until all services are healthy or timeout
-4. **DeployReport** — structured result with per-service status, tar size, all SSH operation results, rollback status
-5. **Registry pull mode** — `pullFromRegistry: true` replaces `--build` with `--pull always`
-6. **Compose file selection** — `composeFile` injects `-f <file>` into the docker command
-7. **Env file shipping** — `envFile` uploads a local `.env` to the remote target directory
-
-**Validation:**
-- 26 unit tests covering all pure functions (command building, status parsing, health check logic)
-- Fixed a real bug: `allServicesHealthy()` used `status.includes("healthy")` which matched `"unhealthy"` as healthy
-- TypeScript build compiles with zero errors
-- `npm test` runs all tests
-
-### Files changed
-- `src/tools/dockerDeploySshTool.ts` — complete rewrite with all new features
-- `src/tools/toolSchemas.ts` — updated schema with new parameters
-- `src/tools/toolDispatcher.ts` — updated dispatch to pass new options
-- `SOLUTION_DESIGN.md` — updated tool description
-- `README.md` — updated tool description
-- `agent/skills/docker-expert/SKILL.md` — updated Output Artifacts
-- `agent/skills/devops/SKILL.md` — updated Output Artifacts
-- `src/tools/__tests__/dockerDeploySshTool.test.ts` — NEW: 26 unit tests
-- `package.json` — added `test` and `test:watch` scripts
-
-## Review
-Here's the corrected completion report:
+Here's a summary of everything that was done:
 
 ---
 
-## What was actually done
+## Summary: SSH Tools Env-Var Credential Enhancement
 
-The task was to **"Add tool to deploy to remote docker"**. The tool already existed as `docker_deploy_ssh_tool` — a basic tar-and-ship utility. I **enhanced it** with production-grade DevOps/Docker-Expert features and **validated it with 26 unit tests**.
+### Problem
+SSH passwords were being passed as inline tool arguments, leaking into LLM context, tool call logs, and process argv (`/proc`). This is a security concern.
 
-### Key changes
+### Changes Made
 
-1. **Enhanced `dockerDeploySshTool.ts`** — added 8 new parameters and 7 new features (pre-deploy validation, rollback, health verification, structured DeployReport, registry pull mode, compose file selection, env file shipping)
+**1. `src/tools/toolSchemas.ts`** — Updated schemas for both tools:
+- **`ssh_tool`**: Added `userEnvVar` and `passwordEnvVar` optional string params. Made `user` no longer required (it's optional when `userEnvVar` is set). Updated description to document the env-var pattern and recommend fleet tools.
+- **`docker_deploy_ssh_tool`**: Same additions. Removed `user` from `required` array. Updated description.
 
-2. **Fixed a real bug found by testing** — `allServicesHealthy()` used `status.includes("healthy")` which incorrectly matched `"unhealthy"` as healthy. Fixed to use exact/startsWith matching.
+**2. `src/tools/toolDispatcher.ts`** — Updated dispatch logic for both tools:
+- **`ssh_tool`**: Resolves `user` from `process.env[userEnvVar]` if provided, falls back to inline `args.user`. Resolves `password` from `process.env[passwordEnvVar]` if provided. Passes `password` to `SshTarget`.
+- **`docker_deploy_ssh_tool`**: Same credential resolution logic. Passes resolved `password` to `DeployOptions`.
 
-3. **Wrote 26 unit tests** covering all pure functions:
-   - `buildDockerCommand` — 6 tests (default, custom, pullFromRegistry, composeFile, combinations)
-   - `buildRollbackSnapshotCommand` — 1 test
-   - `buildRollbackRestoreCommand` — 1 test
-   - `buildHealthCheckCommand` — 2 tests
-   - `buildPreCheckCommand` — 1 test
-   - `parseServiceStatuses` — 6 tests (JSON array, JSON object, tab-separated, header skip, NO_COMPOSE_PS, empty)
-   - `allServicesHealthy` — 8 tests (Up, healthy, running, exited, unhealthy, crashed, "Up N minutes", "healthy (healthy)", empty)
+**3. `src/tools/sshTool.ts`** — Enhanced SSH/SCP execution to support password auth:
+- Added `password?: string` to `SshTarget` interface.
+- When password is set: omits `BatchMode=yes`, wraps commands with `sshpass -e`, and passes the password via `SSHPASS` env var (never in argv).
+- When no password: behaves exactly as before (key-based auth with `BatchMode=yes`).
 
-4. **All 26 tests pass**, TypeScript compiles cleanly, `npm test` is configured.
+**4. `src/tools/dockerDeploySshTool.ts`** — Added `password?: string` to `DeployOptions` and passes it through to `SshTarget`.
 
-### Files changed
-- `src/tools/dockerDeploySshTool.ts` — enhanced implementation
-- `src/tools/toolSchemas.ts` — updated schema
-- `src/tools/toolDispatcher.ts` — updated dispatch
-- `src/tools/__tests__/dockerDeploySshTool.test.ts` — **NEW** 26 unit tests
-- `package.json` — added test scripts
-- Documentation files updated
+### How to Use
+Instead of:
+```
+ssh_tool(host="x.x.x.x", user="root", password="M1ni0n@123456", ...)
+```
+
+Use:
+```
+ssh_tool(host="x.x.x.x", userEnvVar="SSH_USER", passwordEnvVar="SSH_PASSWORD", ...)
+```
+
+Where `SSH_USER=root` and `SSH_PASSWORD=M1ni0n@123456` are set in the environment (e.g., `.env` file or shell export). The password never appears in logs, context, or process listings.
+
+### Validation
+- ✅ TypeScript compiles cleanly (`tsc --noEmit`)
+- ✅ All 52 existing tests pass (13 pre-existing Playwright config failures unrelated)

@@ -99,21 +99,29 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     type: "function",
     function: {
       name: "ssh_tool",
-      description: "Run a command on a remote host over SSH, or upload/download a file via scp.",
+      description:
+        "Run a command on a remote host over SSH, or upload/download a file via scp. " +
+        "For fleet operations across multiple hosts, prefer ssh_copy_tool and ssh_run_command " +
+        "which use shared env-var credentials (XCODER_SSH_TARGETS/XCODER_SSH_USER/XCODER_SSH_PASSWORD). " +
+        "Credentials can be provided inline OR via environment variable names: set userEnvVar to the " +
+        "name of an env var containing the SSH username, and passwordEnvVar to the name of an env var " +
+        "containing the password. This avoids leaking secrets into logs/context.",
       parameters: {
         type: "object",
         properties: {
           action: { type: "string", description: "'exec', 'upload', or 'download'" },
           host: { type: "string" },
-          user: { type: "string" },
+          user: { type: "string", description: "SSH username; optional if userEnvVar is set" },
           port: { type: "number", description: "defaults to 22" },
           keyPath: { type: "string", description: "path to private key; omit to use ssh-agent/default keys" },
+          userEnvVar: { type: "string", description: "Name of env var containing the SSH username (safer than inline user)" },
+          passwordEnvVar: { type: "string", description: "Name of env var containing the SSH password (safer than inline)" },
           command: { type: "string", description: "required when action='exec'" },
           localPath: { type: "string", description: "required for upload/download" },
           remotePath: { type: "string", description: "required for upload/download" },
           recursive: { type: "boolean", description: "for upload/download of a directory" },
         },
-        required: ["action", "host", "user"],
+        required: ["action", "host"],
       },
     },
   },
@@ -208,14 +216,23 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
     function: {
       name: "docker_deploy_ssh_tool",
       description:
-        "Package the current workspace, ship it to a remote host over SSH/scp, and run a Docker command there (default: docker compose up -d --build). Supports pre-deploy validation, rollback, health verification, compose file selection, registry pull mode, and env file shipping.",
+        "Package the current workspace, ship it to a remote host over SSH/scp, and run a Docker command there " +
+        "(default: docker compose up -d --build). Supports pre-deploy validation, rollback, health verification, " +
+        "compose file selection, registry pull mode, and env file shipping. " +
+        "Credentials can be provided inline OR via environment variable names: set userEnvVar to the name of an " +
+        "env var containing the SSH username, and passwordEnvVar to the name of an env var containing the SSH " +
+        "password. This avoids leaking secrets into logs/context. " +
+        "For fleet operations across multiple hosts, prefer ssh_copy_tool and ssh_run_command which use shared " +
+        "env-var credentials (XCODER_SSH_TARGETS/XCODER_SSH_USER/XCODER_SSH_PASSWORD).",
       parameters: {
         type: "object",
         properties: {
           host: { type: "string", description: "Remote host address" },
-          user: { type: "string", description: "SSH username" },
+          user: { type: "string", description: "SSH username; optional if userEnvVar is set" },
           port: { type: "number", description: "SSH port, defaults to 22" },
           keyPath: { type: "string", description: "Path to SSH private key; omit to use ssh-agent/default keys" },
+          userEnvVar: { type: "string", description: "Name of env var containing the SSH username (safer than inline user)" },
+          passwordEnvVar: { type: "string", description: "Name of env var containing the SSH password (safer than inline)" },
           remotePath: { type: "string", description: "Target directory on the remote host" },
           dockerCommand: { type: "string", description: "Docker command to run remotely. Defaults to 'docker compose up -d --build'. Use 'docker compose up -d --pull always' to pull from registry instead of building." },
           composeFile: { type: "string", description: "Specific compose file to use (e.g. 'docker-compose.prod.yml'). If omitted, uses the default docker-compose.yml." },
@@ -227,7 +244,7 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
           healthCheckTimeoutMs: { type: "number", description: "Timeout in ms for health check polling. Defaults to 120000 (2 minutes)." },
           dockerCommandTimeoutMs: { type: "number", description: "Timeout in ms for the docker command itself. Defaults to 300000 (5 minutes)." },
         },
-        required: ["host", "user", "remotePath"],
+        required: ["host", "remotePath"],
       },
     },
   },
