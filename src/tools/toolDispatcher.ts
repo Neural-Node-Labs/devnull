@@ -65,6 +65,21 @@ export async function dispatchToolCall(call: ToolCall, cwd: string = process.cwd
 
   try {
     switch (name) {
+        case "conversation_tool": {
+          // Print the response directly to the console so the user sees it immediately
+          console.log(`\n🤖 devnull: ${args.reply}`);
+
+          return {
+            toolCallId: call.id,
+            toolName: name,
+            observation: {
+              status: "success",
+              message: "Message successfully relayed to the user via terminal interface.",
+              timestamp: new Date().toISOString()
+            },
+            isError: false,
+          };
+        }
       case "glob_tool": {
         const result = await globTool(args.pattern, cwd);
         return { toolCallId: call.id, toolName: name, observation: { files: result }, isError: false };

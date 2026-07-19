@@ -109,10 +109,7 @@ export function createRouter(): Router {
     res.json(body);
   });
 
-  // All other routes require auth
-  router.use(authMiddleware);
-
-  // ─── Health ────────────────────────────────────────────────────────────
+  // ─── Health (no auth required — used by Docker healthcheck) ────────────
   router.get("/health", (_req: Request, res: Response) => {
     const data: HealthResponse = {
       status: "ok",
@@ -122,6 +119,9 @@ export function createRouter(): Router {
     const body: ApiResponse<HealthResponse> = { success: true, data };
     res.json(body);
   });
+
+  // All other routes require auth
+  router.use(authMiddleware);
 
   // ─── Chat / Task Execution ─────────────────────────────────────────────
   router.post("/chat", async (req: Request, res: Response) => {

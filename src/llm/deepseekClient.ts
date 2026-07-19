@@ -248,9 +248,24 @@ const DEFAULT_OPENAI_COMPATIBLE_BASE_URLS: Record<string, string> = {
   deepseek: "https://api.deepseek.com/v1",
 };
 
-function stripUndefined(message: LlmMessage): LlmMessage {
+function stripUndefinedOrig(message: LlmMessage): LlmMessage {
   return Object.fromEntries(Object.entries(message).filter(([, v]) => v !== undefined)) as LlmMessage;
 }
+
+function stripUndefined(message: LlmMessage): LlmMessage {
+  return Object.fromEntries(
+    Object.entries(message).filter(([k, v]) => {
+      // Omit explicitly undefined values
+      if (v === undefined) return false;
+
+      // Omit empty tool_calls arrays to avoid API validation errors
+      if (k === 'tool_calls' && Array.isArray(v) && v.length === 0) return false;
+
+      return true;
+    })
+  ) as LlmMessage;
+}
+
 
 // ─── Anthropic <-> OpenAI-shaped message/tool translation ─────────────────────────────────
 //

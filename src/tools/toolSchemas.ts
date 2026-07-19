@@ -1,6 +1,23 @@
 import { ToolSchema } from "../core/types.js";
 
 export const TOOL_SCHEMAS: ToolSchema[] = [
+    {
+      type: "function",
+      function: {
+        name: "conversation_tool",
+        description: "Use this tool for casual conversation, greetings (hello, hi), or clarifying questions that do not require any file modifications or terminal command operations.",
+        parameters: {
+          type: "object",
+          properties: {
+            reply: {
+              type: "string",
+              description: "Your friendly greeting or conversational response directed to the user."
+            },
+          },
+          required: ["reply"],
+        },
+      },
+    },
   {
     type: "function",
     function: {
