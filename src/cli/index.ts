@@ -12,6 +12,7 @@ import { recordLesson } from "../core/protocol.js";
 import { auditReactLoop } from "../core/reactAuditor.js";
 import { runLiveDiagnostics } from "../core/liveDiagnostics.js";
 import { startApiServer } from "../api/server.js";
+import { dockerComposeUp } from "../tools/dockerComposeDeployTool.js";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -35,6 +36,9 @@ program
   .option("--serve", "start the devnull HTTP API server")
   .option("--port <number>", "port for the API server (default: 3001)", parseInt)
   .option("--host <address>", "host for the API server (default: 0.0.0.0)")
+  .option("--deploy", "trigger deploy mode — runs docker compose up -d --build")
+  .option("--docker", "use docker compose for deployment (implied by --deploy)")
+  .option("--llm <boolean>", "if true, send the deploy task to the LLM as a devops task; if false, execute directly (default: false)", (v) => v === "true" || v === "1")
   .action(async (opts) => {
     const cwd = process.cwd();
     const telemetry = new FileTelemetry(cwd);
@@ -97,6 +101,45 @@ program
 
     if (opts.serve) {
       startApiServer({ port: opts.port, host: opts.host });
+      return;
+    }
+
+    // ─── Deploy Mode ────────────────────────────────────────────────────────
+    // Usage: devnull --deploy --docker --llm true|false
+    //   --llm true  → send the deploy task to the LLM as a devops task (resolves issues)
+    //   --llm false → execute docker compose up -d --build directly
+    if (opts.deploy || opts.docker) {
+      const useLlm = opts.llm === true;
+
+      if (useLlm) {
+        // Send to LLM as a devops deployment task — the LLM will use the
+        // docker_compose_deploy_tool and resolve any issues it encounters.
+        const llm = new DeepSeekClient(llmConfig, telemetry);
+        const orchestrator = new ReActOrchestrator(llm, telemetry, {
+          cwd,
+          planMode: "always",
+        });
+        console.log("🚀 Deploy mode: sending to LLM as devops task...\n");
+        await orchestrator.run(
+          "Deploy the devnull stack using docker compose. " +
+          "Run `docker compose up -d --build` in the project root. " +
+          "If the build or deployment fails, diagnose and fix any issues. " +
+          "Verify all containers are healthy after deployment. " +
+          "Act as a DevOps engineer — resolve any issues you find."
+        );
+      } else {
+        // Direct execution — no LLM involvement
+        console.log("🚀 Deploy mode: executing docker compose up -d --build directly...\n");
+        const result = await dockerComposeUp(undefined, cwd);
+        if (result.exitCode === 0) {
+          console.log("✅ Docker Compose deployment succeeded.\n");
+          console.log(result.stdout);
+        } else {
+          console.error("❌ Docker Compose deployment failed.\n");
+          console.error(result.stderr);
+          process.exit(result.exitCode);
+        }
+      }
       return;
     }
 

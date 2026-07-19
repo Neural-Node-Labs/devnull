@@ -189,6 +189,23 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
   {
     type: "function",
     function: {
+      name: "docker_compose_deploy_tool",
+      description:
+        "Run `docker compose up -d --build` locally in the specified project directory. Use this to deploy the devnull stack (or any docker-compose project) on the local machine. Returns build logs and container status.",
+      parameters: {
+        type: "object",
+        properties: {
+          projectDir: {
+            type: "string",
+            description: "Path to the directory containing docker-compose.yml. Defaults to the current working directory.",
+          },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "docker_deploy_ssh_tool",
       description:
         "Package the current workspace, ship it to a remote host over SSH/scp, and run a Docker command there (default: docker compose up -d --build).",
