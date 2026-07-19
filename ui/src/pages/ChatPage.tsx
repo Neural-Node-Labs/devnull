@@ -365,8 +365,8 @@ export function ChatPage() {
   };
 
   return (
-    <div>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "24px" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 48px - 48px)", /* viewport minus navbar minus main padding */ }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px", flexShrink: 0 }}>
         <h1 style={{ fontSize: "24px", fontWeight: 700, margin: 0 }}>Chat</h1>
         {messages.length > 0 && (
           <button onClick={handleNewChat} style={{ padding: "6px 14px", borderRadius: "6px", border: "1px solid var(--color-border)", background: "transparent", color: "var(--color-text-secondary)", fontSize: "13px", cursor: "pointer" }}>
@@ -375,8 +375,8 @@ export function ChatPage() {
         )}
       </div>
 
-      {/* Chat messages */}
-      <div role="log" aria-live="polite" aria-label="Chat messages" style={{ ...sectionStyle, maxHeight: "480px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "12px" }}>
+      {/* Chat messages — scrollable, fills remaining space */}
+      <div role="log" aria-live="polite" aria-label="Chat messages" style={{ ...sectionStyle, flex: "1 1 auto", overflowY: "auto", display: "flex", flexDirection: "column", gap: "12px", minHeight: 0 }}>
         {messages.length === 0 ? (
           <p style={{ color: "var(--color-text-secondary)", textAlign: "center", padding: "40px" }}>
             Send a message to start chatting with devnull
@@ -469,8 +469,8 @@ export function ChatPage() {
         </div>
       )}
 
-      {/* Input area */}
-      <div style={sectionStyle}>
+      {/* Input area — always visible at the bottom */}
+      <div style={{ ...sectionStyle, flexShrink: 0, marginBottom: 0 }}>
         <div style={{ display: "flex", gap: "8px", marginBottom: "12px", alignItems: "center", flexWrap: "wrap" }}>
           <select
             value={planMode}
