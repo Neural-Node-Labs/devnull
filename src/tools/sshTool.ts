@@ -57,3 +57,4 @@ export async function scpDownload(target: SshTarget, remotePath: string, localPa
   scpArgs.push(`${target.user}@${target.host}:${remotePath}`, localPath);
   return run("scp", scpArgs, 300_000);
 }
+

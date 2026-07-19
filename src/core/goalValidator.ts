@@ -1,8 +1,9 @@
-import { LlmClient, LlmMessage } from "./types.js";
+import { LlmClient, LlmMessage, LlmUsage } from "./types.js";
 
 export interface ValidationResult {
   valid: boolean;
   reason: string;
+  usage?: LlmUsage;
 }
 
 /**
@@ -45,11 +46,15 @@ export async function validateGoal(
   try {
     const cleaned = response.content.replace(/```json|```/g, "").trim();
     const parsed = JSON.parse(cleaned);
-    return { valid: Boolean(parsed.valid), reason: String(parsed.reason ?? "") };
+    return { valid: Boolean(parsed.valid), reason: String(parsed.reason ?? ""), usage: response.usage };
   } catch {
     // Fail open on our own parsing bug rather than blocking completion forever on a format slip,
     // but this is logged so it's visible, not silent.
-    return { valid: true, reason: `validator response unparseable, defaulting to valid (fail-open): ${response.content.slice(0, 200)}` };
+    return {
+      valid: true,
+      reason: `validator response unparseable, defaulting to valid (fail-open): ${response.content.slice(0, 200)}`,
+      usage: response.usage,
+    };
   }
 }
 
@@ -60,3 +65,4 @@ export function buildObservationTranscript(messages: LlmMessage[]): string {
     .map((m) => `[${m.name}] ${m.content}`)
     .join("\n\n");
 }
+

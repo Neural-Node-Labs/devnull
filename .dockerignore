@@ -1,10 +1,40 @@
+# --- Dependencies ---
 node_modules
+
+# --- Build output ---
 dist
+
+# --- Version control ---
 .git
+.gitignore
+.gitattributes
+
+# --- Runtime / generated data ---
 .log
 .agent/index
 tasks
 reports
+coverage
 *.dump
+
+# --- Secrets (never ship into an image) ---
 .env
-npm-debug.log
+.env.local
+.env.production
+
+# --- Logs ---
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# --- OS artifacts ---
+.DS_Store
+Thumbs.db
+
+# --- IDE ---
+.vscode
+.idea
+*.swp
+*.swo
+
+# --- Separate frontend project (not needed for the agent image) ---

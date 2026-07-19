@@ -8,7 +8,7 @@ description: >
   or when other skills need a fresh index before they can trust file state.
 triggers: [index, filesystem, "clean up files", organize, move files, delete files, workspace, ".agentignore", scan directory]
 version: 1.0
-requires_tools: [glob_tool, grep_tool, read_tool, write_edit_tool, run_command_tool]
+requires_tools: [glob_tool, grep_tool, read_tool, write_edit_tool, run_command_tool, indexing_tool]
 composes_with: [programmer, architect, devops, analyst]
 ---
 
