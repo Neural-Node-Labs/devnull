@@ -48,3 +48,8 @@ rollback, and environment configuration.
 - Deployment scripts
 - artifact.md (deploy file list + rollback plan)
 - Deploy report (via docker_deploy_ssh_tool: pre-check results, rollback status, per-service health)
+
+## SSH Access
+- SSH access to the target environment is required for deploys and health checks.
+- Use the `ssh_tool` to run commands on the target environment, and `ssh_copy_tool` to copy files.
+- Use `docker_deploy_ssh_tool` to deploy Docker containers via SSH.
