@@ -56,6 +56,13 @@ export function startApiServer(opts: ApiServerOptions = {}): import("http").Serv
     console.log(`  POST /api/v1/users`);
     console.log(`  PUT  /api/v1/users/:id`);
     console.log(`  DELETE /api/v1/users/:id`);
+    console.log(`  GET  /api/v1/plans`);
+    console.log(`  POST /api/v1/plans`);
+    console.log(`  GET  /api/v1/plans/:id`);
+    console.log(`  PUT  /api/v1/plans/:id/status`);
+    console.log(`  PUT  /api/v1/plans/:planId/tasks/:taskId`);
+    console.log(`  POST /api/v1/plans/:id/tasks`);
+    console.log(`  DELETE /api/v1/plans/:planId/tasks/:taskId`);
     if (isAuthEnabled()) {
       console.log(`[devnull API] Auth: Login required (ADMIN_USERNAME/ADMIN_PASSWORD is set)`);
     } else {

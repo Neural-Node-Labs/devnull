@@ -89,6 +89,15 @@ export class DeepSeekClient implements LlmClient {
       throw new Error(`${config.provider} HTTP ${res.status}: ${text}`);
     }
 
+    // Guard against non-JSON responses (e.g. proxy HTML error pages that return 200)
+    const contentType = res.headers.get("content-type") ?? "";
+    if (!contentType.includes("application/json") && !contentType.includes("text/event-stream")) {
+      const text = await res.text();
+      throw new Error(
+        `${config.provider} returned non-JSON response (Content-Type: ${contentType}): ${text.slice(0, 500)}`
+      );
+    }
+
     const data = (await res.json()) as {
       choices: {
         message: { content: string | null; tool_calls?: LlmResponse["toolCalls"]; reasoning_content?: string };
@@ -155,6 +164,15 @@ export class DeepSeekClient implements LlmClient {
     if (!res.ok) {
       const text = await res.text();
       throw new Error(`anthropic HTTP ${res.status}: ${text}`);
+    }
+
+    // Guard against non-JSON responses (e.g. proxy HTML error pages that return 200)
+    const contentType = res.headers.get("content-type") ?? "";
+    if (!contentType.includes("application/json")) {
+      const text = await res.text();
+      throw new Error(
+        `anthropic returned non-JSON response (Content-Type: ${contentType}): ${text.slice(0, 500)}`
+      );
     }
 
     const data = (await res.json()) as {

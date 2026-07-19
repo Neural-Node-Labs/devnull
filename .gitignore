@@ -6,3 +6,7 @@
 /workspace/
 /dist/
 /node_modules/
+/workspace-agent/
+/ui/node_modules/
+ui/dist/
+

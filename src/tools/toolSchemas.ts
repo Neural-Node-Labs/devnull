@@ -260,5 +260,68 @@ export const TOOL_SCHEMAS: ToolSchema[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "save_plan_tool",
+      description:
+        "Save a plan to PostgreSQL. The plan is stored with its task description, plan content, and individual tasks. Use this when the UI is active and plans should be persisted in the database for the LLM to manage task status.",
+      parameters: {
+        type: "object",
+        properties: {
+          taskDescription: { type: "string", description: "The original task description that generated this plan" },
+          planContent: { type: "string", description: "The full plan content/markdown" },
+          tasks: { type: "array", items: { type: "string" }, description: "Array of individual task descriptions extracted from the plan" },
+        },
+        required: ["taskDescription", "planContent", "tasks"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_task_status_tool",
+      description:
+        "Update the status of a task within a plan. The LLM can use this to track progress as tasks are completed, in progress, failed, or skipped.",
+      parameters: {
+        type: "object",
+        properties: {
+          taskId: { type: "string", description: "The ID of the task to update" },
+          status: { type: "string", description: "New status: 'pending', 'in_progress', 'completed', 'failed', or 'skipped'" },
+        },
+        required: ["taskId", "status"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "add_plan_task_tool",
+      description:
+        "Add a new task to an existing plan. Use this when the LLM determines additional work is needed that wasn't in the original plan.",
+      parameters: {
+        type: "object",
+        properties: {
+          planId: { type: "string", description: "The ID of the plan to add the task to" },
+          description: { type: "string", description: "Description of the new task" },
+        },
+        required: ["planId", "description"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_plan_task_tool",
+      description:
+        "Delete a task from a plan. Use this when a task is no longer relevant or was added by mistake.",
+      parameters: {
+        type: "object",
+        properties: {
+          taskId: { type: "string", description: "The ID of the task to delete" },
+        },
+        required: ["taskId"],
+      },
+    },
+  },
 ];
-

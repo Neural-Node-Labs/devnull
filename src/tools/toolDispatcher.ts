@@ -223,6 +223,55 @@ export async function dispatchToolCall(call: ToolCall, cwd: string = process.cwd
           return { toolCallId: call.id, toolName: name, observation: { error: `Unknown task_history_tool action: ${args.action}. Use 'recent' or 'search'.` }, isError: true };
         }
       }
+      case "save_plan_tool": {
+        const { PlanStore } = await import("../api/planStore.js");
+        const planStore = new PlanStore();
+        try {
+          const plan = await planStore.savePlan(args.taskDescription, args.planContent, args.tasks ?? []);
+          return { toolCallId: call.id, toolName: name, observation: { plan, status: "saved" }, isError: false };
+        } finally {
+          await planStore.close();
+        }
+      }
+      case "update_task_status_tool": {
+        const { PlanStore } = await import("../api/planStore.js");
+        const planStore = new PlanStore();
+        try {
+          const updated = await planStore.updateTaskStatus(args.taskId, args.status);
+          if (!updated) {
+            return { toolCallId: call.id, toolName: name, observation: { error: "Task not found" }, isError: true };
+          }
+          return { toolCallId: call.id, toolName: name, observation: { updated: true, taskId: args.taskId, status: args.status }, isError: false };
+        } finally {
+          await planStore.close();
+        }
+      }
+      case "add_plan_task_tool": {
+        const { PlanStore } = await import("../api/planStore.js");
+        const planStore = new PlanStore();
+        try {
+          const task = await planStore.addTask(args.planId, args.description);
+          if (!task) {
+            return { toolCallId: call.id, toolName: name, observation: { error: "Plan not found" }, isError: true };
+          }
+          return { toolCallId: call.id, toolName: name, observation: { task, status: "added" }, isError: false };
+        } finally {
+          await planStore.close();
+        }
+      }
+      case "delete_plan_task_tool": {
+        const { PlanStore } = await import("../api/planStore.js");
+        const planStore = new PlanStore();
+        try {
+          const deleted = await planStore.deleteTask(args.taskId);
+          if (!deleted) {
+            return { toolCallId: call.id, toolName: name, observation: { error: "Task not found" }, isError: true };
+          }
+          return { toolCallId: call.id, toolName: name, observation: { deleted: true, taskId: args.taskId }, isError: false };
+        } finally {
+          await planStore.close();
+        }
+      }
       default:
         return { toolCallId: call.id, toolName: name, observation: { error: `Unknown tool: ${name}` }, isError: true };
     }
@@ -231,4 +280,3 @@ export async function dispatchToolCall(call: ToolCall, cwd: string = process.cwd
     return { toolCallId: call.id, toolName: name, observation: { error: message }, isError: true };
   }
 }
-

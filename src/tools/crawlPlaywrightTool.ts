@@ -28,7 +28,26 @@ interface FormInfo {
  * and stubs out a test per discovered interactive element for the user to fill in/adjust.
  */
 export async function crawlAndGeneratePlaywrightTest(url: string, outputPath: string, cwd: string = process.cwd()): Promise<CrawlSummary> {
-  const res = await fetch(url);
+  const res = await fetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (compatible; devnull-crawler/1.0; +https://github.com/neural-node-labs/devnull)",
+      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    },
+  });
+
+  if (!res.ok) {
+    throw new Error(`Failed to fetch ${url}: HTTP ${res.status} ${res.statusText}`);
+  }
+
+  // Guard against non-HTML responses (e.g. JSON API endpoints, binary files)
+  const contentType = res.headers.get("content-type") ?? "";
+  if (!contentType.includes("text/html") && !contentType.includes("application/xhtml")) {
+    throw new Error(
+      `URL ${url} returned unexpected Content-Type "${contentType}" — expected HTML. ` +
+      `Only HTML pages can be crawled for interactive elements.`
+    );
+  }
+
   const html = await res.text();
   const $ = cheerio.load(html);
 

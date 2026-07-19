@@ -163,6 +163,15 @@ async function request<T>(
     signal,
   });
 
+  // Guard against non-JSON responses (e.g. proxy HTML error pages, 404 catch-all pages)
+  const contentType = res.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    const text = await res.text();
+    throw new Error(
+      `Server returned non-JSON response (HTTP ${res.status}, Content-Type: ${contentType}): ${text.slice(0, 300)}`
+    );
+  }
+
   const json: ApiResponse<T> = await res.json();
 
   // If we get a 401/403, clear auth state (token expired/invalid)
@@ -333,6 +342,36 @@ export const api = {
   /** List available skills. */
   async listSkills(): Promise<ApiResponse> {
     return request("GET", "/skills");
+  },
+
+  // ─── Plans ──────────────────────────────────────────────────────────────
+
+  async listPlans(): Promise<ApiResponse<{ plans: any[] }>> {
+    return request("GET", "/plans");
+  },
+
+  async getPlan(id: string): Promise<ApiResponse<{ plan: any; tasks: any[] }>> {
+    return request("GET", `/plans/${id}`);
+  },
+
+  async savePlan(taskDescription: string, planContent: string, tasks: string[]): Promise<ApiResponse<{ plan: any }>> {
+    return request("POST", "/plans", { taskDescription, planContent, tasks });
+  },
+
+  async updatePlanStatus(id: string, status: string): Promise<ApiResponse> {
+    return request("PUT", `/plans/${id}/status`, { status });
+  },
+
+  async updateTaskStatus(planId: string, taskId: string, status: string): Promise<ApiResponse> {
+    return request("PUT", `/plans/${planId}/tasks/${taskId}`, { status });
+  },
+
+  async addPlanTask(planId: string, description: string): Promise<ApiResponse<{ task: any }>> {
+    return request("POST", `/plans/${planId}/tasks`, { description });
+  },
+
+  async deletePlanTask(planId: string, taskId: string): Promise<ApiResponse> {
+    return request("DELETE", `/plans/${planId}/tasks/${taskId}`);
   },
 
   /** Alias for listSkills — used by DiagnosticsPage. */

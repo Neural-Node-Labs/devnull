@@ -9,6 +9,7 @@ import { loadLlmConfig } from "../config/loadConfig.js";
 import { SkillRegistry } from "../core/skillRegistry.js";
 import { authMiddleware, verifyLogin, generateToken, revokeToken, isAuthEnabled } from "./auth.js";
 import { registerProjectRoutes } from "./projectRoutes.js";
+import { registerPlanRoutes } from "./planRoutes.js";
 import { listProjects, getProject } from "./projectStore.js";
 import { hasStoredApiKey, setStoredApiKey, clearStoredApiKey, applyStoredApiKey } from "./llmKeyStore.js";
 import { readTaskHistory } from "../core/taskHistory.js";
@@ -38,6 +39,7 @@ const pkg = JSON.parse(
 export function createRouter(): Router {
   const router = Router();
   registerProjectRoutes(router);
+  registerPlanRoutes(router);
 
   /**
    * Resolves which directory a task should run against: the explicitly requested project, else
@@ -409,6 +411,25 @@ export function createRouter(): Router {
     const tasks = readTaskHistory(cwd, limit);
     const body: ApiResponse = { success: true, data: { tasks } };
     res.json(body);
+  });
+
+  // ─── Task History Logs — get telemetry logs for a specific task ───────────────────────
+  router.get("/task-history/:taskId/logs", async (req: Request, res: Response) => {
+    const taskId = String(req.params.taskId);
+    const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 100;
+
+    // Try to get logs from PostgreSQL if available
+    try {
+      const { PostgresTelemetry } = await import("../telemetry/postgresTelemetry.js");
+      const pgTelemetry = new PostgresTelemetry();
+      const logs = await pgTelemetry.getLogsForTask(taskId, limit);
+      const body: ApiResponse = { success: true, data: { taskId, logs } };
+      res.json(body);
+    } catch {
+      // Fallback: return empty — file-based telemetry doesn't have task-level indexing
+      const body: ApiResponse = { success: true, data: { taskId, logs: [], note: "PostgreSQL telemetry not available. Enable DATABASE_URL for task-level log queries." } };
+      res.json(body);
+    }
   });
 
   // ─── LLM API Key ────────────────────────────────────────────────────────

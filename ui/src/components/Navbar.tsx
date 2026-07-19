@@ -9,6 +9,7 @@ const NAV_ITEMS: { to: string; label: string; adminOnly?: boolean }[] = [
   { to: "/chat", label: "Chat" },
   { to: "/projects", label: "Projects" },
   { to: "/telemetry", label: "Telemetry" },
+  { to: "/plans", label: "Plans" },
   { to: "/diagnostics", label: "Diagnostics" },
   { to: "/settings", label: "Settings" },
   { to: "/admin", label: "Admin", adminOnly: true },
