@@ -13,6 +13,8 @@ import { registerPlanRoutes } from "./planRoutes.js";
 import { listProjects, getProject } from "./projectStore.js";
 import { hasStoredApiKey, setStoredApiKey, clearStoredApiKey, applyStoredApiKey } from "./llmKeyStore.js";
 import { readTaskHistory } from "../core/taskHistory.js";
+import { PhaseReportStore } from "./phaseReportStore.js";
+import { WbsStore } from "./wbsStore.js";
 import type {
   ApiResponse,
   ChatRequest,
@@ -332,7 +334,8 @@ export function createRouter(): Router {
     if (session.maxIterations) opts.maxIterations = session.maxIterations;
     if (session.isolatedWorkspace) opts.isolatedWorkspace = true;
     if (session.continueOnLimit) opts.continueOnLimit = true;
-    if (session.phasePlanning) opts.phasePlanning = true;
+    // Map API's phasePlanning (true = enable) to orchestrator's singlePhase (false = enable)
+    if (session.phasePlanning === false) opts.singlePhase = true;
     const orchestrator = new ReActOrchestrator(llm, telemetry, opts);
 
     try {
@@ -444,6 +447,116 @@ export function createRouter(): Router {
       // Fallback: return empty — file-based telemetry doesn't have task-level indexing
       const body: ApiResponse = { success: true, data: { taskId, logs: [], note: "PostgreSQL telemetry not available. Enable DATABASE_URL for task-level log queries." } };
       res.json(body);
+    }
+  });
+
+  // ─── Phase Reports ──────────────────────────────────────────────────────
+  const phaseReportStore = new PhaseReportStore();
+
+  router.get("/phase-reports", async (req: Request, res: Response) => {
+    try {
+      const taskId = req.query.taskId as string | undefined;
+      if (!taskId) {
+        const body: ApiResponse = { success: false, error: "Missing required query param 'taskId'" };
+        res.status(400).json(body);
+        return;
+      }
+      const reports = await phaseReportStore.listByTask(taskId);
+      const body: ApiResponse = { success: true, data: { reports } };
+      res.json(body);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      const body: ApiResponse = { success: false, error: message };
+      res.status(500).json(body);
+    }
+  });
+
+  router.get("/phase-reports/:id", async (req: Request, res: Response) => {
+    try {
+      const id = String(req.params.id);
+      const report = await phaseReportStore.get(id);
+      if (!report) {
+        const body: ApiResponse = { success: false, error: "Phase report not found" };
+        res.status(404).json(body);
+        return;
+      }
+      const body: ApiResponse = { success: true, data: report };
+      res.json(body);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      const body: ApiResponse = { success: false, error: message };
+      res.status(500).json(body);
+    }
+  });
+
+  // ─── WBS (Work Breakdown Structure) ─────────────────────────────────────
+  const wbsStore = new WbsStore();
+
+  router.get("/wbs", async (req: Request, res: Response) => {
+    try {
+      const taskId = req.query.taskId as string | undefined;
+      if (!taskId) {
+        const body: ApiResponse = { success: false, error: "Missing required query param 'taskId'" };
+        res.status(400).json(body);
+        return;
+      }
+      const entries = await wbsStore.listByTask(taskId);
+      const body: ApiResponse = { success: true, data: { entries } };
+      res.json(body);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      const body: ApiResponse = { success: false, error: message };
+      res.status(500).json(body);
+    }
+  });
+
+  router.put("/wbs/:id/status", async (req: Request, res: Response) => {
+    try {
+      const id = String(req.params.id);
+      const { status } = req.body as { status: string };
+
+      if (!status || typeof status !== "string") {
+        const body: ApiResponse = { success: false, error: "Missing or invalid 'status' field" };
+        res.status(400).json(body);
+        return;
+      }
+
+      const validStatuses = ["pending", "in_progress", "completed", "failed", "skipped"];
+      if (!validStatuses.includes(status)) {
+        const body: ApiResponse = {
+          success: false,
+          error: `Invalid status '${status}'. Allowed: ${validStatuses.join(", ")}`,
+        };
+        res.status(400).json(body);
+        return;
+      }
+
+      // Look up the WBS entry by ID to get taskId and phaseNumber
+      const entry = await wbsStore.get(id);
+      if (!entry) {
+        const body: ApiResponse = { success: false, error: "WBS entry not found" };
+        res.status(404).json(body);
+        return;
+      }
+
+      const updated = await wbsStore.updateStatus(
+        entry.taskId,
+        entry.phaseNumber,
+        status as "pending" | "in_progress" | "completed" | "failed" | "skipped"
+      );
+
+      if (!updated) {
+        const body: ApiResponse = { success: false, error: "Failed to update WBS entry status" };
+        res.status(500).json(body);
+        return;
+      }
+
+      const body: ApiResponse = { success: true, data: { id, status } };
+      res.json(body);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      const body: ApiResponse = { success: false, error: message };
+      res.status(500).json(body);
     }
   });
 

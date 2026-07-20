@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, ChatOptions } from "../api/client";
 
@@ -62,6 +62,61 @@ function clearChatState(): void {
   }
 }
 
+/* ─── Toast Notification Helpers ─────────────────────────────────────────── */
+
+interface Toast {
+  id: number;
+  message: string;
+  type: "success" | "warning" | "error";
+}
+
+let toastIdCounter = 0;
+let globalSetToasts: React.Dispatch<React.SetStateAction<Toast[]>> | null = null;
+
+function showToast(message: string, type: Toast["type"] = "success"): void {
+  if (!globalSetToasts) return;
+  const id = ++toastIdCounter;
+  globalSetToasts((prev) => [...prev, { id, message, type }]);
+  // Auto-dismiss after 5 seconds
+  setTimeout(() => {
+    globalSetToasts?.((prev) => prev.filter((t) => t.id !== id));
+  }, 5000);
+}
+
+function requestBrowserNotification(title: string, body: string): void {
+  if (!("Notification" in window)) return;
+  if (Notification.permission === "granted") {
+    new Notification(title, { body });
+  } else if (Notification.permission !== "denied") {
+    Notification.requestPermission().then((permission) => {
+      if (permission === "granted") {
+        new Notification(title, { body });
+      }
+    });
+  }
+}
+
+/* ─── Toast Container Component ─────────────────────────────────────────── */
+
+function ToastContainer({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: number) => void }) {
+  if (toasts.length === 0) return null;
+  return (
+    <div className="devnull-toast-container">
+      {toasts.map((t) => (
+        <div
+          key={t.id}
+          className={`devnull-toast devnull-toast-${t.type}`}
+          onClick={() => onDismiss(t.id)}
+        >
+          {t.type === "success" ? "✅" : t.type === "warning" ? "⚠️" : "❌"} {t.message}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ─── ChatPage Component ────────────────────────────────────────────────── */
+
 export function ChatPage() {
   const [searchParams] = useSearchParams();
   const savedState = loadChatState();
@@ -86,10 +141,17 @@ export function ChatPage() {
   const [isListening, setIsListening] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [lastTaskText, setLastTaskText] = useState<string>(savedState?.lastTaskText ?? "");
+  const [toasts, setToasts] = useState<Toast[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const recognitionRef = useRef<any>(null);
+
+  // Register the global toast setter so showToast() works from anywhere in this component
+  useEffect(() => {
+    globalSetToasts = setToasts;
+    return () => { globalSetToasts = null; };
+  }, []);
 
   // Persist state changes to sessionStorage
   useEffect(() => {

@@ -95,7 +95,7 @@ async function testPhasePlanningOnGeneratesPhases() {
     maxIterations: 10,
     planMode: "never",
     interactive: false, // auto-approve phases
-    phasePlanning: true,
+    singlePhase: false,
   });
 
   const result = await orchestrator.run("implement a feature with multiple phases");
@@ -133,7 +133,7 @@ async function testPhasePlanningFallbackSinglePhase() {
     maxIterations: 10,
     planMode: "never",
     interactive: false,
-    phasePlanning: true,
+    singlePhase: false,
   });
 
   const result = await orchestrator.run("a simple task");
@@ -172,7 +172,7 @@ async function testPhasePlanningNonInteractiveAutoApproves() {
     maxIterations: 10,
     planMode: "never",
     interactive: false, // non-interactive = auto-approve
-    phasePlanning: true,
+    singlePhase: false,
   });
 
   const result = await orchestrator.run("fix a bug");

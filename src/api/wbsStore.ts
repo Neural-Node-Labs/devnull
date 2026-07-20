@@ -101,6 +101,26 @@ export class WbsStore {
   }
 
   /**
+   * Get a WBS entry by ID.
+   */
+  async get(id: string): Promise<WbsEntry | null> {
+    try {
+      if (!this.initialized) await this.init();
+      const result = await this.pool.query(
+        `SELECT id, task_id as "taskId", task_description as "taskDescription",
+                phase_number as "phaseNumber", phase_title as "phaseTitle",
+                status, created_at as "createdAt", updated_at as "updatedAt"
+         FROM wbs_entries WHERE id = $1`,
+        [id]
+      );
+      return result.rows[0] ?? null;
+    } catch (err) {
+      console.warn("[WbsStore] Failed to get:", err instanceof Error ? err.message : String(err));
+      return null;
+    }
+  }
+
+  /**
    * Update the status of a WBS entry.
    */
   async updateStatus(taskId: string, phaseNumber: number, status: WbsEntry["status"]): Promise<boolean> {

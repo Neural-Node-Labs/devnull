@@ -296,9 +296,17 @@ export class ReActOrchestrator {
         if (!shouldContinue) {
           console.log("Stopping at user's request.");
           this.lastOutcome = "iteration_limit";
-          finalContent =
-            finalContent ||
-            `(Task stopped: hit the ${maxIterations}-iteration limit${restartCount > 0 ? ` after ${restartCount} restart(s)` : ""} without reaching a final answer. Partial progress may exist in the workspace — check task_history_tool or the workspace files directly.)`;
+          // Always synthesize a proper report from the message history instead of
+          // relying on finalContent (which may be empty or just a brief thought from
+          // a tool-calling turn). This ensures the orchestrator NEVER returns an
+          // empty or meaningless string — the user always gets a useful summary.
+          finalContent = this.synthesizeReport(
+            taskDescription,
+            messages,
+            finalContent,
+            maxIterations,
+            restartCount
+          );
           break;
         }
         restartCount += 1;
@@ -496,6 +504,83 @@ export class ReActOrchestrator {
       }
     }
     return finalContent;
+  }
+
+  /**
+   * Synthesizes a meaningful report from the message history when the orchestrator terminates
+   * without a proper final answer (e.g., iteration limit hit while the model was still making
+   * tool calls). This ensures the orchestrator NEVER returns an empty or meaningless string.
+   *
+   * The report includes:
+   * - What was accomplished (tools called, files changed, observations made)
+   * - What was left incomplete
+   * - The last thought/state of the model
+   * - A fallback message if nothing useful can be extracted
+   */
+  private synthesizeReport(
+    taskDescription: string,
+    messages: LlmMessage[],
+    currentFinalContent: string,
+    maxIterations: number,
+    restartCount: number
+  ): string {
+    // If the model already produced a meaningful final answer (non-empty, not just a brief thought),
+    // use it as-is. A "meaningful" answer is one that's longer than a typical mid-task thought
+    // (e.g., "Reading file..." or "Step 1 thinking...") and doesn't end with "..." or "thinking..."
+    if (currentFinalContent && currentFinalContent.length > 30) {
+      const trimmed = currentFinalContent.trim();
+      if (!trimmed.endsWith("...") && !trimmed.endsWith("thinking...") && !trimmed.endsWith("working...")) {
+        return currentFinalContent;
+      }
+    }
+
+    // Extract tool calls and observations from the message history to build a summary
+    const toolActions: string[] = [];
+    const observations: string[] = [];
+    let lastThought = "";
+
+    for (const msg of messages) {
+      if (msg.role === "assistant" && msg.content) {
+        lastThought = msg.content;
+      }
+      if (msg.role === "assistant" && msg.tool_calls) {
+        for (const tc of msg.tool_calls) {
+          try {
+            const args = JSON.parse(tc.function.arguments);
+            const argSummary = Object.keys(args).length > 0
+              ? `(${Object.entries(args).map(([k, v]) => `${k}=${String(v).slice(0, 60)}`).join(", ")})`
+              : "";
+            toolActions.push(`${tc.function.name} ${argSummary}`);
+          } catch {
+            toolActions.push(tc.function.name);
+          }
+        }
+      }
+      if (msg.role === "tool" && msg.content) {
+        const content = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+        observations.push(content.slice(0, 200));
+      }
+    }
+
+    // Build a structured report
+    const parts: string[] = [];
+    parts.push(`Task stopped: hit the ${maxIterations}-iteration limit${restartCount > 0 ? ` after ${restartCount} restart(s)` : ""} without reaching a final answer.`);
+
+    if (toolActions.length > 0) {
+      parts.push(`\n## What was done\n\nThe following ${toolActions.length} tool call(s) were made:\n${toolActions.map((a) => `- ${a}`).join("\n")}`);
+    }
+
+    if (lastThought) {
+      parts.push(`\n## Last model thought\n\n${lastThought.slice(0, 500)}`);
+    }
+
+    if (observations.length > 0) {
+      parts.push(`\n## Key observations\n\n${observations.slice(-3).map((o) => `- ${o}`).join("\n")}`);
+    }
+
+    parts.push(`\n## Next steps\n\nPartial progress may exist in the workspace. Check task_history_tool or the workspace files directly to see what was accomplished before continuing.`);
+
+    return parts.join("\n");
   }
 
   /**
@@ -727,6 +812,55 @@ export class ReActOrchestrator {
       // Item 3b: Color-coded CLI output
       reportPhaseStats(phase.number, phase.title, phaseTokens, phaseIterations, this.opts.consoleIndent ?? 0);
 
+      // Persist phase report to PostgreSQL (best-effort)
+      try {
+        const phaseReportStore = new PhaseReportStore();
+        await phaseReportStore.save({
+          taskId: sanitizedTaskName,
+          phaseNumber: phase.number,
+          phaseTitle: phase.title,
+          content: phaseResult,
+          tokens: phaseTokens,
+          iterations: phaseIterations,
+        });
+        await phaseReportStore.close();
+      } catch (err) {
+        console.warn("[PhaseReportStore] Failed to save phase report:", err instanceof Error ? err.message : String(err));
+      }
+
+      // Persist WBS entries to PostgreSQL (best-effort)
+      try {
+        const wbsStore = new WbsStore();
+        await wbsStore.saveBatch(
+          phases.map((p) => ({
+            taskId: sanitizedTaskName,
+            taskDescription: taskDescription,
+            phaseNumber: p.number,
+            phaseTitle: p.title,
+            status: (p.number <= phase.number ? "completed" : "pending") as "completed" | "pending",
+          }))
+        );
+        await wbsStore.close();
+      } catch (err) {
+        console.warn("[WbsStore] Failed to save WBS entries:", err instanceof Error ? err.message : String(err));
+      }
+
+      // Persist phase-level task history to PostgreSQL (best-effort)
+      try {
+        const pgHistory = new PostgresTaskHistory();
+        await pgHistory.append({
+          id: `phase_${sanitizedTaskName}_${phase.number}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          timestamp: new Date().toISOString(),
+          task: `Phase ${phase.number}: ${phase.title}`,
+          summary: phaseResult,
+          iterations: phaseIterations,
+          totalTokens: phaseTokens,
+        });
+        await pgHistory.close();
+      } catch (err) {
+        console.warn("[PostgresTaskHistory] Failed to append phase history:", err instanceof Error ? err.message : String(err));
+      }
+
       // Item 5b: Update WBS to mark this phase as done
       const wbsContent = phases.map((p) => {
         const checked = p.number <= phase.number ? "x" : " ";
@@ -782,6 +916,8 @@ export class ReActOrchestrator {
   }
 
   private async askContinue(taskDescription: string, maxIterations: number): Promise<boolean> {
+    const ANSI_GREEN = "\x1b[32m";
+    const ANSI_RESET = "\x1b[0m";
     const interactive = this.opts.interactive !== false; // default true
     if (!interactive) {
       // API context: auto-continue rather than hanging on stdin
@@ -789,8 +925,17 @@ export class ReActOrchestrator {
       return true;
     }
     const rl = readline.createInterface({ input, output });
+    console.log(
+      `\n${ANSI_GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${ANSI_RESET}`
+    );
+    console.log(
+      `${ANSI_GREEN}▶ ITERATION LIMIT REACHED — Continue?${ANSI_RESET}`
+    );
+    console.log(
+      `${ANSI_GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${ANSI_RESET}`
+    );
     const answer = await rl.question(
-      `\nIteration limit reached for maxIterations [${maxIterations}]: "${taskDescription}".\nContinue for another round? (yes/no) `
+      `\n${ANSI_GREEN}Iteration limit reached for maxIterations [${maxIterations}]: "${taskDescription}".\nContinue for another round? (yes/no) ${ANSI_RESET}`
     );
     rl.close();
     return /^y(es)?$/i.test(answer.trim());
