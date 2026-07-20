@@ -20,6 +20,245 @@ import { dockerComposeUp } from "./dockerComposeDeployTool.js";
 import { rebuildIndex, readIndexedFile } from "./indexingTool.js";
 import { readTaskHistory, searchTaskHistory } from "../core/taskHistory.js";
 
+/**
+ * Attempts to parse JSON with automatic repair for common LLM generation errors.
+ *
+ * Strategy (tried in order):
+ * 1. Fast path: native JSON.parse() — succeeds for well-formed JSON
+ * 2. Repair path: on failure, attempts to fix common issues:
+ *    a. Unescaped double quotes inside string values (the most common LLM error)
+ *    b. Truncated/malformed strings near the end of the JSON
+ *    c. Missing closing braces/brackets
+ *
+ * This is the primary defense against LLM-generated malformed JSON at the
+ * tool dispatch boundary. The LLM's output cannot be directly controlled, so
+ * we must be resilient to common JSON generation errors here.
+ *
+ * Exported for testing — the unit tests in tests/unit/toolDispatcher.test.ts
+ * import this function directly to verify repair behavior.
+ */
+export function safeParseJson(raw: string): Record<string, unknown> {
+  // Fast path: well-formed JSON
+  try {
+    return JSON.parse(raw);
+  } catch {
+    // Fall through to repair path
+  }
+
+  // Repair path: attempt to fix common LLM JSON errors
+  const repaired = attemptJsonRepair(raw);
+  if (repaired !== null) {
+    return repaired;
+  }
+
+  // Last resort: if all repair attempts fail, re-throw the original error
+  // so the caller gets the original parse error message (most informative)
+  return JSON.parse(raw);
+}
+
+/**
+ * Attempts to repair common JSON malformations produced by LLMs.
+ *
+ * Known patterns repaired:
+ * 1. Unescaped double quotes inside string values — the most common issue.
+ *    LLMs often fail to escape `"` inside source code or text content.
+ * 2. Truncated strings near the end of the JSON — missing closing quote.
+ * 3. Missing closing braces/brackets at the end.
+ *
+ * Returns the parsed object on success, or null if repair failed.
+ *
+ * Exported for testing.
+ */
+export function attemptJsonRepair(raw: string): Record<string, unknown> | null {
+  if (!raw || raw.length < 2) return null;
+
+  let repaired = raw;
+
+  // --- Repair 1: Fix unescaped double quotes inside string values ---
+  //
+  // Strategy: Walk through the string character by character, tracking
+  // whether we're inside a string value. When we encounter a double quote
+  // that would terminate a string prematurely (i.e., it's not preceded by
+  // a backslash and is inside a value context), escape it.
+  //
+  // This is a heuristic — it can't be perfect without a full JSON parser,
+  // but it handles the common case where the LLM puts unescaped quotes
+  // inside string values like source code or file content.
+  repaired = repairUnescapedQuotes(repaired);
+
+  // --- Repair 2: Fix truncated strings (missing closing quote at end) ---
+  //
+  // If the JSON ends with an unterminated string (no closing quote before
+  // EOF), append the missing quote.
+  repaired = repairTruncatedString(repaired);
+
+  // --- Repair 3: Fix missing closing braces/brackets ---
+  //
+  // If the JSON is missing closing braces/brackets at the end (common when
+  // the LLM's output is truncated), count open/close and append what's needed.
+  repaired = repairMissingClosers(repaired);
+
+  // Try parsing the repaired JSON
+  try {
+    const result = JSON.parse(repaired);
+    if (typeof result === "object" && result !== null && !Array.isArray(result)) {
+      return result as Record<string, unknown>;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Repairs unescaped double quotes inside JSON string values.
+ *
+ * Walks through the JSON character by character, tracking string boundaries.
+ * When a double quote is found inside a string value that isn't escaped,
+ * it's escaped with a backslash.
+ *
+ * This handles the most common LLM JSON error: source code or text content
+ * containing unescaped double quotes.
+ *
+ * Exported for testing.
+ */
+export function repairUnescapedQuotes(raw: string): string {
+  const chars: string[] = [];
+  let inString = false;
+  let escapeNext = false;
+
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+
+    if (escapeNext) {
+      // Previous char was a backslash — this char is escaped
+      chars.push(c);
+      escapeNext = false;
+      continue;
+    }
+
+    if (c === "\\") {
+      chars.push(c);
+      escapeNext = true;
+      continue;
+    }
+
+    if (c === '"') {
+      if (inString) {
+        // We're inside a string and hit a double quote.
+        // Check if this looks like a string terminator or an unescaped quote.
+        // Heuristic: if the next non-whitespace char is one of: , ] } : or EOF,
+        // it's likely a legitimate string terminator. Otherwise, escape it.
+        const rest = raw.slice(i + 1).trimStart();
+        if (rest.length === 0 || rest[0] === "," || rest[0] === "]" || rest[0] === "}" || rest[0] === ":") {
+          // Legitimate string terminator
+          chars.push(c);
+          inString = false;
+        } else {
+          // Unescaped quote inside a string value — escape it
+          chars.push("\\");
+          chars.push(c);
+        }
+      } else {
+        // Entering a new string
+        chars.push(c);
+        inString = true;
+      }
+      continue;
+    }
+
+    chars.push(c);
+  }
+
+  return chars.join("");
+}
+
+/**
+ * Repairs a truncated JSON string — if the JSON ends while inside a string
+ * value (no closing quote), appends the missing closing quote.
+ *
+ * Exported for testing.
+ */
+export function repairTruncatedString(raw: string): string {
+  // Check if we're inside an unterminated string at the end
+  let inString = false;
+  let escapeNext = false;
+
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+
+    if (escapeNext) {
+      escapeNext = false;
+      continue;
+    }
+
+    if (c === "\\") {
+      escapeNext = true;
+      continue;
+    }
+
+    if (c === '"') {
+      inString = !inString;
+    }
+  }
+
+  // If we're still inside a string at EOF, append the missing closing quote
+  if (inString) {
+    return raw + '"';
+  }
+
+  return raw;
+}
+
+/**
+ * Repairs missing closing braces/brackets at the end of JSON.
+ * Counts opening vs closing { } [ ] and appends what's missing.
+ */
+function repairMissingClosers(raw: string): string {
+  let inString = false;
+  let escapeNext = false;
+  const stack: string[] = [];
+
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+
+    if (escapeNext) {
+      escapeNext = false;
+      continue;
+    }
+
+    if (c === "\\") {
+      escapeNext = true;
+      continue;
+    }
+
+    if (c === '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) continue;
+
+    if (c === "{") {
+      stack.push("}");
+    } else if (c === "[") {
+      stack.push("]");
+    } else if (c === "}" || c === "]") {
+      if (stack.length > 0 && stack[stack.length - 1] === c) {
+        stack.pop();
+      }
+      // If mismatched closer, ignore (don't try to fix structural errors)
+    }
+  }
+
+  // Append any missing closers in reverse order
+  if (stack.length > 0) {
+    return raw + stack.reverse().join("");
+  }
+
+  return raw;
+}
+
 export interface DispatchResult {
   toolCallId: string;
   toolName: string;
@@ -51,7 +290,7 @@ export async function dispatchToolCall(call: ToolCall, cwd: string = process.cwd
   let args: Record<string, any>;
 
   try {
-    args = JSON.parse(call.function.arguments || "{}");
+    args = safeParseJson(call.function.arguments || "{}");
   } catch (err) {
     return { toolCallId: call.id, toolName: name, observation: { error: `Invalid JSON arguments: ${err}` }, isError: true };
   }

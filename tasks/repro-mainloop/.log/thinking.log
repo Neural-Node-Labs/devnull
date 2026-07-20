@@ -1,3 +1,0 @@
-2026-07-20T05:18:55.447Z {"iteration":1,"phase":"action","thought":"Reading file...","action":{"tool":"run_command_tool","input":{"command":"echo step1"}},"observation":{"command":"echo step1","exitCode":0,"stdout":"step1\r\n","stderr":""},"score":90}
-2026-07-20T05:18:55.491Z {"iteration":2,"phase":"action","thought":"Processing...","action":{"tool":"run_command_tool","input":{"command":"echo step2"}},"observation":{"command":"echo step2","exitCode":0,"stdout":"step2\r\n","stderr":""},"score":90}
-2026-07-20T05:18:55.492Z {"iteration":3,"phase":"validation","thought":"iteration limit reached (2); restart declined","action":{"tool":"iteration_limit_check","input":{"maxIterations":2,"priorRestarts":0}},"observation":{"approved":false}}
