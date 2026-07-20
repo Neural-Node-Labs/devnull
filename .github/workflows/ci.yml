@@ -1,0 +1,167 @@
+# =============================================================================
+# devnull — CI Pipeline
+#
+# Triggers:
+#   - push / pull_request on main branch
+#   - any branch push (for early feedback)
+#
+# Stages:
+#   1. Lint & Type Check (core + UI)
+#   2. Unit Tests (vitest)
+#   3. Build Standalone Package
+#   4. Build Docker Image
+#   5. Smoke Test — Standalone
+#   6. Smoke Test — Docker
+#   7. Upload Artifacts
+# =============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+env:
+  NODE_VERSION: "20"
+  DOCKER_IMAGE_NAME: devnull-api
+  UI_DOCKER_IMAGE_NAME: devnull-ui
+
+jobs:
+  # ─── Job 1: Lint, Type Check & Unit Tests ───────────────────────────────
+  test:
+    name: Lint, Type Check & Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+          cache-dependency-path: package-lock.json
+
+      - name: Install core dependencies
+        run: npm ci
+
+      - name: TypeScript type check (core)
+        run: npx tsc --noEmit
+
+      - name: Run unit tests
+        run: npm test
+        env:
+          DATABASE_TYPE: sqlite
+
+      - name: Install UI dependencies
+        working-directory: ./ui
+        run: npm ci
+
+      - name: TypeScript type check (UI)
+        working-directory: ./ui
+        run: npx tsc --noEmit
+
+      - name: Build UI
+        working-directory: ./ui
+        run: npm run build
+
+  # ─── Job 2: Build Standalone Package ────────────────────────────────────
+  build-standalone:
+    name: Build Standalone Package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [test]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Build standalone package
+        run: bash scripts/build.sh --standalone
+
+      - name: Smoke test — standalone package
+        run: bash scripts/smoke-test-standalone.sh
+
+      - name: Upload standalone artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: devnull-standalone
+          path: devnull-standalone.tar.gz
+          retention-days: 30
+
+  # ─── Job 3: Build Docker Image ──────────────────────────────────────────
+  build-docker:
+    name: Build Docker Image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [test]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image (API)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          load: true
+          tags: ${{ env.DOCKER_IMAGE_NAME }}:ci-${{ github.sha }},${{ env.DOCKER_IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=ci-${{ github.sha }}
+            BUILD_DATE=${{ github.event.repository.updated_at }}
+
+      - name: Build Docker image (UI)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./ui
+          file: ui/Dockerfile
+          load: true
+          tags: ${{ env.UI_DOCKER_IMAGE_NAME }}:ci-${{ github.sha }},${{ env.UI_DOCKER_IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=ci-${{ github.sha }}
+            BUILD_DATE=${{ github.event.repository.updated_at }}
+
+      - name: Smoke test — Docker
+        run: bash scripts/smoke-test-docker.sh
+        env:
+          DOCKER_API_IMAGE: ${{ env.DOCKER_IMAGE_NAME }}:ci-${{ github.sha }}
+          DOCKER_UI_IMAGE: ${{ env.UI_DOCKER_IMAGE_NAME }}:ci-${{ github.sha }}
+
+      - name: Save Docker images as artifact
+        run: |
+          docker save ${{ env.DOCKER_IMAGE_NAME }}:ci-${{ github.sha }} | gzip > devnull-api.tar.gz
+          docker save ${{ env.UI_DOCKER_IMAGE_NAME }}:ci-${{ github.sha }} | gzip > devnull-ui.tar.gz
+
+      - name: Upload Docker image artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-images
+          path: |
+            devnull-api.tar.gz
+            devnull-ui.tar.gz
+          retention-days: 30
