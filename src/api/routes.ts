@@ -15,6 +15,7 @@ import { hasStoredApiKey, setStoredApiKey, clearStoredApiKey, applyStoredApiKey 
 import { readTaskHistory } from "../core/taskHistory.js";
 import { PhaseReportStore } from "./phaseReportStore.js";
 import { WbsStore } from "./wbsStore.js";
+import { TaskHistoryStore } from "./taskHistoryStore.js";
 import type {
   ApiResponse,
   ChatRequest,
@@ -32,6 +33,9 @@ import type {
   SkillListEntry,
   UpdateUserRequest,
   User,
+  TaskHistoryEntryResponse,
+  TaskHistoryListResponse,
+  TaskHistoryDetailResponse,
 } from "./types.js";
 
 const pkg = JSON.parse(
@@ -211,6 +215,10 @@ export function createRouter(): Router {
           outcome === "iteration_limit"
             ? "The task did not finish within the iteration limit."
             : "The plan was not approved, so no changes were made.";
+        if (outcome === "iteration_limit") {
+          data.iterationMaxReached = true;
+          data.continueRequested = true;
+        }
       }
       const body: ApiResponse<ChatResponse> = { success: true, data };
       res.json(body);
@@ -347,6 +355,10 @@ export function createRouter(): Router {
           outcome === "iteration_limit"
             ? "The task did not finish within the iteration limit."
             : "The plan was not approved, so no changes were made.";
+        if (outcome === "iteration_limit") {
+          data.iterationMaxReached = true;
+          data.continueRequested = true;
+        }
       }
       const body: ApiResponse<ExecuteResponse> = { success: true, data };
       res.json(body);

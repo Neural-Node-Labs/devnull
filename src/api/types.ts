@@ -50,6 +50,12 @@ export interface ChatResponse {
    *  transport error so the UI can show *why* it stopped (iteration limit, validator exhausted,
    *  plan rejected, etc.) rather than just "something went wrong". */
   limitation?: string;
+  /** When true, the server is explicitly requesting user input to continue (e.g., iteration
+   *  limit reached). The UI should highlight the "Continue" button in red to draw attention. */
+  continueRequested?: boolean;
+  /** When true, the run stopped because the iteration limit was reached. The UI should
+   *  highlight the limitation message in red to distinguish it from other limitation types. */
+  iterationMaxReached?: boolean;
 }
 
 /** POST /api/v1/chat/plan request body. */
@@ -82,6 +88,8 @@ export interface ExecuteResponse {
   result: string;
   iterations: number;
   limitation?: string;
+  continueRequested?: boolean;
+  iterationMaxReached?: boolean;
 }
 
 /** GET /api/v1/health response data. */
@@ -199,5 +207,32 @@ export interface WbsResponse {
 /** PUT /api/v1/wbs/:id/status request body. */
 export interface UpdateWbsStatusRequest {
   status: "pending" | "in_progress" | "completed" | "failed" | "skipped";
+}
+
+// ─── Task History Types ────────────────────────────────────────────────────
+
+/** A task history entry returned by the API. */
+export interface TaskHistoryEntryResponse {
+  id: string;
+  task: string;
+  summary: string;
+  timestamp: string;
+  iterations: number;
+  totalTokens: number | null;
+}
+
+/** GET /api/v1/task-history query params. */
+export interface TaskHistoryQuery {
+  limit?: number;
+}
+
+/** GET /api/v1/task-history response data. */
+export interface TaskHistoryListResponse {
+  tasks: TaskHistoryEntryResponse[];
+}
+
+/** GET /api/v1/task-history/:id response data. */
+export interface TaskHistoryDetailResponse {
+  task: TaskHistoryEntryResponse;
 }
 

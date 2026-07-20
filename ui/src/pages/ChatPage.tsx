@@ -8,6 +8,12 @@ interface ChatMessage {
   timestamp: Date;
   usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
   healthScore?: number;
+  /** When true, the server explicitly requested user input to continue (iteration limit hit).
+   *  The UI should highlight the "Continue" button in red to draw attention. */
+  continueRequested?: boolean;
+  /** When true, the run stopped because the iteration limit was reached. The UI should
+   *  highlight the limitation message in red to distinguish it from other limitation types. */
+  iterationMaxReached?: boolean;
 }
 
 const CHAT_STORAGE_KEY = "devnull_chat_state";
@@ -142,6 +148,7 @@ export function ChatPage() {
   const [uploading, setUploading] = useState(false);
   const [lastTaskText, setLastTaskText] = useState<string>(savedState?.lastTaskText ?? "");
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [showContinueDialog, setShowContinueDialog] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);

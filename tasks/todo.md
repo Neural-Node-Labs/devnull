@@ -1,25 +1,12 @@
-# Plan: Phase 1: Establish Timeline & Gather Evidence
-- **Goal:** Identify the exact last 2 tasks that failed, locate all relevant logs, error outputs, and context from those sessions. Establish a precise timeline of events leading to the crash/stop.
-- **Key Actions:** Search for `.log` files, session artifacts, and any error output. Correlate the timing of the crash with any recent changes (deploys, config changes, code merges).
+# Plan: execute testing, write test case both CLI, API and UI organize in single folder test all testable functionality, docker is available to you
 
-### Phase 1: Establish Timeline & Gather Evidence
-- **Goal:** Identify the exact last 2 tasks that failed, locate all relevant logs, error outputs, and context from those sessions. Establish a precise timeline of events leading to the crash/stop.
-- **Key Actions:** Search for `.log` files, session artifacts, and any error output. Correlate the timing of the crash with any recent changes (deploys, config changes, code merges).
+## Plan: Execute Testing & Write Test Cases (CLI, API, UI)
 
-Context from previous phases:
-(none — this is the first phase)
-
-Complete this phase. Do not work on future phases — focus only on what this phase requires.
-
-I'll start Phase 1 by gathering evidence about the last 2 failed tasks. Let me search for logs, session artifacts, and error outputs.
-
-<plan_mode>
-## Phase 1 Plan: Establish Timeline & Gather Evidence
-
-- [ ] 1. Search for `.log` files in the workspace to find recent error/crash logs
-- [ ] 2. Search for session artifacts (`.agent` directory, session files, task files)
-- [ ] 3. Examine `tasks/todo.md` and `tasks/lessons.md` for recent failed tasks
-- [ ] 4. Check git history for recent changes (deploys, config changes, code merges) around the crash time
-- [ ] 5. Correlate findings to establish a precise timeline of events leading to the crash
-- [ ] 6. Summarize findings with exact timestamps, error messages, and relevant context
-</plan_mode>
+- [ ] **1. Map existing test infrastructure** — Read `package.json` scripts, check for existing test runners (vitest, jest, playwright), examine `src/test/` directory structure, and review `docker-compose.yml` for test services.
+- [ ] **2. Design test architecture** — Create `tests/` directory with subfolders (`tests/cli/`, `tests/api/`, `tests/ui/`), define test runner config, and write `tests/README.md` with test execution instructions.
+- [ ] **3. Write CLI test cases** — Test `npm run dev` startup, `npm run build` compilation, CLI argument parsing, and exit codes. Use `execa` or `child_process` for process spawning.
+- [ ] **4. Write API test cases** — Test all endpoints (`/api/v1/chat`, `/api/v1/chat/plan`, `/api/v1/chat/execute`, `/api/v1/health`) with HTTP assertions. Cover happy path, error cases, and iteration-limit scenarios.
+- [ ] **5. Write UI test cases** — Use Playwright to test the chat interface, admin page, navigation, and "Continue" button on limitation messages. Test responsive layout and error states.
+- [ ] **6. Set up Docker test environment** — Create `docker-compose.test.yml` with Postgres + API + UI services, health checks, and test-specific overrides. Ensure tests can run against the Docker stack.
+- [ ] **7. Run full test suite & fix failures** — Execute all tests, capture results, fix any test failures, and verify all tests pass. Document any pre-existing failures vs. new issues.
+- [ ] **8. Document test results** — Write `tests/test-report.md` with pass/fail summary, coverage gaps, and instructions for running tests locally and in CI.

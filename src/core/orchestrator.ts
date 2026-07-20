@@ -138,15 +138,20 @@ export class ReActOrchestrator {
    *  runSubagent(), which folds each subagent's total into its parent's before returning. */
   private cumulativeUsage: LlmUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0, reasoningTokens: 0, cachedTokens: 0 };
   private llmCallCount = 0;
+  /** Total ReAct loop iterations across all restarts for this run (not just the current round).
+   *  Reset to 0 at the start of each run() call. Each iteration is one LLM call + tool execution
+   *  cycle. This is the "iteration count" reported in task history and phase reports. */
+  private iterationCount = 0;
   private health: HealthState = createHealthState();
   private lastNudgeIteration = -Infinity;
-  private lastOutcome: "completed" | "iteration_limit" | "plan_rejected" = "completed";
+  private lastOutcome: "completed" | "iteration_limit" | "plan_rejected" | "partial_success" = "completed";
 
   /** How the most recent run() call ended. "completed" means a genuine final answer was
-   *  reached; anything else means the returned text is a fallback explanation, not a real
-   *  result, and callers (e.g. the API) should surface that distinction rather than treating
-   *  it as a normal success. */
-  getLastOutcome(): "completed" | "iteration_limit" | "plan_rejected" {
+   *  reached; "partial_success" means the iteration limit was hit but meaningful progress
+   *  was made and a summary was produced; anything else means the returned text is a
+   *  fallback explanation, not a real result, and callers (e.g. the API) should surface
+   *  that distinction rather than treating it as a normal success. */
+  getLastOutcome(): "completed" | "iteration_limit" | "plan_rejected" | "partial_success" {
     return this.lastOutcome;
   }
 
@@ -176,6 +181,11 @@ export class ReActOrchestrator {
     return { ...this.cumulativeUsage };
   }
 
+  /** Read-only view of this run's total ReAct loop iterations (includes subagent iterations). */
+  getIterationCount(): number {
+    return this.iterationCount;
+  }
+
   private addUsage(usage: LlmUsage | undefined): void {
     if (!usage) return;
     this.llmCallCount += 1;
@@ -195,6 +205,7 @@ export class ReActOrchestrator {
     this.cumulativeUsage.reasoningTokens = (this.cumulativeUsage.reasoningTokens ?? 0) + (subUsage.reasoningTokens ?? 0);
     this.cumulativeUsage.cachedTokens = (this.cumulativeUsage.cachedTokens ?? 0) + (subUsage.cachedTokens ?? 0);
     this.llmCallCount += sub.llmCallCount;
+    this.iterationCount += sub.getIterationCount();
   }
 
   /** Route the task to one or more skills (multi-skill composition via composes_with). */
@@ -273,11 +284,21 @@ export class ReActOrchestrator {
 
     while (true) {
       iteration += 1;
+      this.iterationCount += 1;
 
       if (iteration > maxIterations) {
         if (runOpts.isSubagent) {
           // Subagents don't interactively prompt — they just stop and report what they have.
-          finalContent = "(subagent hit iteration limit without completing)";
+          // Instead of a hardcoded string, synthesize a meaningful report from the message
+          // history so the parent orchestrator gets useful partial-progress information.
+          this.lastOutcome = "partial_success";
+          finalContent = await this.synthesizeReport(
+            taskDescription,
+            messages,
+            finalContent,
+            maxIterations,
+            restartCount
+          );
           break;
         }
         // continueOnLimit takes highest priority — auto-continue without asking
@@ -295,12 +316,12 @@ export class ReActOrchestrator {
         });
         if (!shouldContinue) {
           console.log("Stopping at user's request.");
-          this.lastOutcome = "iteration_limit";
+          this.lastOutcome = "partial_success";
           // Always synthesize a proper report from the message history instead of
           // relying on finalContent (which may be empty or just a brief thought from
           // a tool-calling turn). This ensures the orchestrator NEVER returns an
           // empty or meaningless string — the user always gets a useful summary.
-          finalContent = this.synthesizeReport(
+          finalContent = await this.synthesizeReport(
             taskDescription,
             messages,
             finalContent,
@@ -484,7 +505,7 @@ export class ReActOrchestrator {
       const historyEntry = {
         task: taskDescription,
         summary: finalContent,
-        iterations: iteration,
+        iterations: this.iterationCount,
         totalTokens: this.cumulativeUsage.totalTokens || undefined,
       };
       appendTaskHistory(this.projectRoot, historyEntry);
@@ -801,7 +822,7 @@ export class ReActOrchestrator {
       // Capture per-phase stats (Item 3a)
       const phaseUsage = sub.getCumulativeUsage();
       const phaseTokens = phaseUsage.totalTokens;
-      const phaseIterations = sub.llmCallCount;
+      const phaseIterations = sub.getIterationCount();
 
       // Item 2a: Write phase report to tasks/[task_name]-phase-[N].md
       const phaseReportPath = path.join(tasksDir, `${sanitizedTaskName}-phase-${phase.number}.md`);
