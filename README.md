@@ -468,11 +468,37 @@ Both services have resource limits, healthchecks, and restart policies configure
 
 ## Testing
 
-devnull includes three categories of tests:
+devnull includes four categories of tests, organized under `tests/`, `e2e/`, `ui-test-suited/`, and `src/test/`.
 
-### 1. Unit Tests (src/test/)
+### 1. Unit Tests (tests/unit/ + src/test/)
 
-Standalone test suites, runnable via `node dist/test/test<Subject>.js`:
+**Vitest-based unit tests** (`tests/unit/`) — pure logic tests with no external dependencies:
+
+```bash
+# Run all unit tests
+npx vitest run --config tests/vitest.config.ts
+
+# Run a specific test file
+npx vitest run tests/unit/auth.test.ts --config tests/vitest.config.ts
+```
+
+| Test File | Module Under Test | Scenarios Covered |
+|---|---|---|
+| `auth.test.ts` | `src/api/auth.ts` | Password hashing (salt:hash format, uniqueness), password verification (correct/wrong/malformed/empty), token generation (UUID, role defaults, uniqueness), token validation (valid/invalid/empty), token revocation, login verification (success/wrong-password/unknown-user/case-sensitivity), user store get/set |
+| `config.test.ts` | `src/config/loadConfig.ts` | Default config when no file exists, YAML file parsing, skill overrides, `resolveModelForSkill()` (base/override/undefined/partial) |
+| `contextCompaction.test.ts` | `src/core/contextCompaction.ts` | Message trimming, token budget enforcement, history preservation |
+| `duplicateActionDetector.test.ts` | `src/core/duplicateActionDetector.ts` | Exact-repeat detection, legitimate re-run passthrough, identical observation flagging |
+| `goalValidator.test.ts` | `src/core/goalValidator.ts` | Completion claim validation, observation-backed acceptance, retry exhaustion |
+| `ignoreRules.test.ts` | `src/core/ignoreRules.ts` | `.agentignore`/`.gitignore`/`.dockerignore` merge, pattern matching |
+| `llmKeyStore.test.ts` | `src/api/llmKeyStore.ts` | Key storage, retrieval, validation |
+| `projectStore.test.ts` | `src/api/projectStore.ts` | Project CRUD, workspace management |
+| `protocol.test.ts` | `src/core/protocol.ts` | System prompt assembly, devnull.md loading, lessons injection |
+| `skillRegistry.test.ts` | `src/core/skillRegistry.ts` | Skill loading, frontmatter parsing, trigger routing, `composes_with` resolution |
+| `stepScorer.test.ts` | `src/core/stepScorer.ts` | ReAct step scoring, quality metrics |
+| `taskHistory.test.ts` | `src/core/taskHistory.ts` | JSONL append/read, Markdown append/read, entry capping, search |
+| `workspaceManager.test.ts` | `src/core/workspaceManager.ts` | Workspace creation, isolation, cleanup |
+
+**Standalone Node test suites** (`src/test/`) — runnable via compiled JS:
 
 ```bash
 npm run build
@@ -503,7 +529,44 @@ node dist/test/testDeepSeekContract.js
 node dist/test/liveSmokeTest.js
 ```
 
-### 2. E2E Deployment Tests (e2e/)
+### 2. Page-Level Playwright Tests (tests/pages/)
+
+Playwright-based UI tests for individual pages, organized by route. These test the UI against a running dev server (API + frontend):
+
+```bash
+# Start services first
+docker compose --profile serve up -d
+
+# Run all page tests
+npx playwright test tests/pages/ --config ui-test-suited/playwright.config.ts
+
+# Run a specific page test
+npx playwright test tests/pages/login-page.spec.ts --config ui-test-suited/playwright.config.ts
+```
+
+**Page Test Coverage:**
+
+| Page | URL | Test File | Scenarios Covered |
+|---|---|---|---|
+| **Login** | `/login` | `tests/pages/login-page.spec.ts` | Form rendering (title, username/password fields, submit button), loading state, empty-field validation, short-password validation (register mode), redirect when authenticated, invalid credentials, accessible form labels, autocomplete attribute, auto-focus |
+| **Home** | `/` | `tests/pages/home-page.spec.ts` | Welcome message, navigation cards (Chat/Projects/Telemetry/Diagnostics/Settings/Admin), card link routing, health info badges (API version, status, uptime), console error check, navigation bar, username display |
+| **Chat** | `/chat` | `tests/pages/chat-page.spec.ts` | Page title, empty state, message input (placeholder, aria-label), send button (disabled/enabled), typing enables send, plan mode selector (3 options), voice/upload/options buttons, options toggle (show/hide advanced settings), new chat button, accessibility (role='log'), user message display, thinking indicator, cancel button, enter-to-send, shift+enter newline |
+| **Projects** | `/projects` | `tests/pages/projects-page.spec.ts` | Page title/description, loading state, empty state, "New project" button, add form (name/slug preview), empty-name validation, project creation, workspace file browser, active project indicator, error state |
+| **Telemetry** | `/telemetry` | `tests/pages/telemetry-page.spec.ts` | Page title/description, loading state, empty state, log file tabs (thinking/llm/sys), Refresh button, search input, task ID filter, ReAct trace legend badges, tab switching, search filtering, error state |
+| **Settings** | `/settings` | `tests/pages/settings-page.spec.ts` | Page title, theme selector (cards, click-to-change), user management (admin section, Add User, form, user list), change password section (disabled), LLM key management (status, Save/Clear buttons), empty-key validation, console error check |
+| **Admin** | `/admin` | `tests/pages/admin-page.spec.ts` | Page title/description, user management section, Add User button, add user form (username/password/role selector), role options (User/Admin), Cancel closes form, user list table (columns), user rows (Edit/Delete), inline edit mode (Save/Cancel), edit form fields, user creation success, empty-username error, non-admin redirect, console error check |
+| **Diagnostics** | `/diagnostics` | `tests/pages/diagnostics-page.spec.ts` | Page title/description, Run tests button, test results section, auto-run on mount (API Connection/Health Check/Skills Loaded/Telemetry Available/React Render), pass/fail status indicators, loaded skills section, skills list/empty state, directives & protocol section (Engineering Protocol/System Directives/Tool Definitions/Skill Registry), re-run tests, skill role badges, console error check |
+| **Plans** | `/plans` | `tests/pages/plans-page.spec.ts` | Page title/description, loading state, empty state, Refresh button, reload on click, error state, console error check |
+| **Plan Detail** | `/plans/:id` | `tests/pages/plan-detail-page.spec.ts` | Loading state (valid ID), error state (invalid ID), Back button, Back navigation, plan content section, tasks section, empty tasks state, add task input, console error check |
+| **Task History** | `/task-history` | `tests/pages/task-history-page.spec.ts` | Page title, loading state, empty state, Refresh button, reload on click, error state, console error check |
+
+**Test Helpers** (`tests/pages/helpers.ts`):
+- `UI_BASE` / `API_BASE` — base URL constants
+- `loginAsAdmin(page)` — logs in via UI form (admin/admin1234)
+- `navigateTo(page, path)` — navigates and waits for network idle
+- `registerFirstUser(page)` — registers first admin user if none exist
+
+### 3. E2E Deployment Tests (e2e/)
 
 Playwright-based tests that verify the API and UI are running correctly in a Docker deployment:
 
@@ -519,12 +582,14 @@ npx playwright test
 cd ..
 ```
 
-Tests cover: API health check, skills listing (13 skills), chat endpoint validation,
-telemetry endpoints, 404 handling, UI homepage loading, React mount point, asset loading.
+| Spec File | Coverage |
+|---|---|
+| `deploy-test.spec.ts` | API health check (200, status ok, version, uptime), skills listing (13 skills, expected names), chat endpoint validation (empty task → 400, missing task → 400), telemetry endpoints (empty entries, invalid log → 400), 404 handling, UI homepage (title, React mount, JS/CSS assets) |
+| `plans-ui-test.spec.ts` | Plans page UI rendering and interaction |
 
-### 3. UI Tests (ui-test-suited/)
+### 4. Comprehensive UI Test Suite (ui-test-suited/)
 
-Comprehensive Playwright UI test suite covering the full feature surface from `ui.md`:
+Full feature-surface test suite covering all requirements from `ui.md`:
 
 ```bash
 # Start services first
@@ -544,11 +609,9 @@ npm run show-report      # View HTML report
 cd ..
 ```
 
-**UI Test Specs:**
-
 | Spec File | Coverage |
 |---|---|
-| `health.spec.ts` | API health check, skills listing, error handling (400/404), telemetry endpoints |
+| `health.spec.ts` | API health check, skills listing (13 skills), error handling (400/404), telemetry endpoints, auth token resolution (register/login flow) |
 | `homepage.spec.ts` | UI loads, title, root mount point, JS/CSS assets, navigation, console errors |
 | `chat-flow.spec.ts` | Message input, send button, voice/listen, file upload, chat history |
 | `project-management.spec.ts` | Project CRUD, active project selection, workspace browser, download/delete, LLM context toggle |
@@ -556,6 +619,56 @@ cd ..
 | `telemetry.spec.ts` | Searchable logs, reason-action-observation, command execution, token usage, log type selector |
 | `admin.spec.ts` | Admin user creation, user management, role editing, user deletion, admin-only visibility |
 | `diagnostic.spec.ts` | React testing, tools/skills/directives testing, run test button, pass/fail results |
+| `api-user-management.spec.ts` | API-level user CRUD operations |
+
+### CI Integration
+
+For CI pipelines (GitHub Actions, GitLab CI, etc.), the recommended workflow:
+
+```yaml
+# .github/workflows/test.yml (example)
+name: Test
+on: [push, pull_request]
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm ci
+      - run: npx vitest run --config tests/vitest.config.ts
+
+  playwright:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_PASSWORD: devnull, POSTGRES_DB: devnull }
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm ci
+      - run: npm run build
+      - run: npx playwright install chromium
+      - run: |
+          # Start API + UI, run page tests
+          docker compose --profile serve up -d
+          npx playwright test tests/pages/ --config ui-test-suited/playwright.config.ts
+```
+
+**Key CI considerations:**
+- **Unit tests** (`vitest`) are fast and have zero external dependencies — run on every push
+- **Page tests** (`tests/pages/`) require a running dev stack (API + UI + Postgres) — run on PRs to main
+- **E2E tests** (`e2e/`) require a full Docker deployment — run on release branches
+- **Comprehensive UI tests** (`ui-test-suited/`) are the most thorough — run nightly or on demand
+- All Playwright test suites use `ui-test-suited/playwright.config.ts` as the shared config (baseURL, reporter, screenshot/trace settings)
 
 ## Setup & Execution Guide
 

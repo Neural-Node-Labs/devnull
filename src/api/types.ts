@@ -31,6 +31,13 @@ export interface ChatRequest {
   /** Optional: enable phase-based planning. When true, the task is divided into multiple phases
    *  each with isolated ReAct memory to reduce token footprint. Default: false. */
   phasePlanning?: boolean;
+  /**
+   * Optional: fully autonomous mode — automatically answers "yes" to ALL interactive prompts
+   * (plan approval, phase plan approval, iteration limit continuation, subagent continuation).
+   * The LLM drives end-to-end without any human intervention. Use this for CI/CD, automated
+   * testing, or any scenario where zero human input is desired. Default: false.
+   */
+  auto?: boolean;
 }
 
 /** POST /api/v1/chat response data. */

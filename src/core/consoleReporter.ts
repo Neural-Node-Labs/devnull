@@ -141,8 +141,9 @@ export function reportUsage(
   const bits = [`${usage.promptTokens.toLocaleString()} in`, `${usage.completionTokens.toLocaleString()} out`];
   if (usage.reasoningTokens) bits.push(`${usage.reasoningTokens.toLocaleString()} reasoning`);
   if (usage.cachedTokens) bits.push(`${usage.cachedTokens.toLocaleString()} cached`);
-  const line = `${bits.join(" · ")} — ${runningTotal.toLocaleString()} total this run`;
-  console.log(`${prefix(indent)}${color("🪙", ANSI.yellow)} ${color(line, ANSI.dim)}`);
+  const tokenBreakdown = color(bits.join(" · "), ANSI.dim);
+  const totalLabel = color(`— ${runningTotal.toLocaleString()} total this run`, ANSI.brightYellow + ANSI.bold);
+  console.log(`${prefix(indent)}${color("🪙", ANSI.yellow)} ${tokenBreakdown} ${totalLabel}`);
 }
 
 /**

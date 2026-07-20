@@ -121,6 +121,53 @@ export interface IndexEntry {
   endLine: number;
 }
 
+/**
+ * A single health score entry with timestamp and reason.
+ * Used to track the agent's self-healing health over time.
+ */
+export interface ScoreEntry {
+  /** ISO 8601 timestamp when this score was recorded. */
+  timestamp: string;
+  /** Score value 0.0-1.0 (0.0 = failing, 1.0 = perfect). */
+  score: number;
+  /** Human-readable reason for this score (e.g. "tool call errored", "completed without error"). */
+  reason: string;
+}
+
+/**
+ * Aggregated health score with history and trend direction.
+ * Provides a persistent view of the agent's self-healing health state.
+ */
+export interface HealthScore {
+  /** Current rolling average health score (0-100). */
+  current: number;
+  /** Ordered history of score entries, oldest first. */
+  history: ScoreEntry[];
+  /** Trend direction based on recent score changes. */
+  trend: "up" | "down" | "stable";
+}
+
+/**
+ * Default health score used when initializing a new ReActMemory instance.
+ * Starts at neutral (0.5/100 mapped to 50/100) with no history and stable trend.
+ */
+export const DEFAULT_HEALTH_SCORE: HealthScore = {
+  current: 0.5,
+  history: [],
+  trend: "stable",
+};
+
+/**
+ * Persistent memory state for a ReAct agent run.
+ * Tracks the agent's health score, which is used to detect when the agent
+ * is stuck in a loop or making repeated errors, and to inject self-healing
+ * nudges into the context.
+ */
+export interface ReActMemory {
+  /** The agent's self-healing health score with history and trend. */
+  healthScore: HealthScore;
+}
+
 export interface IndexFile {
   generatedAt: string;
   entries: IndexEntry[];

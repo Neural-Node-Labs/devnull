@@ -2,7 +2,7 @@ import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import fs from "node:fs";
 import path from "node:path";
-import { LlmClient, LlmMessage, ReActStep, TelemetryInterface, LoadedSkill, Phase, LlmUsage, SubagentResult } from "./types.js";
+import { LlmClient, LlmMessage, ReActStep, TelemetryInterface, LoadedSkill, Phase, LlmUsage, SubagentResult, ReActMemory, ScoreEntry, HealthScore, DEFAULT_HEALTH_SCORE } from "./types.js";
 import { SkillRegistry } from "./skillRegistry.js";
 import { TOOL_SCHEMAS } from "../tools/toolSchemas.js";
 import { dispatchToolCall } from "../tools/toolDispatcher.js";
@@ -45,6 +45,15 @@ export interface OrchestratorOptions {
    * Defaults to true (interactive prompts enabled).
    */
   interactive?: boolean;
+  /**
+   * When true, the orchestrator runs in fully autonomous mode — automatically answering "yes"
+   * to ALL interactive prompts (plan approval, phase plan approval, iteration limit continuation,
+   * subagent continuation). This is the "auto-pilot" mode: the LLM drives end-to-end without
+   * any human intervention. Overrides `interactive` and `continueOnLimit`. Set this for CI/CD,
+   * automated testing, or any scenario where zero human input is desired.
+   * Defaults to false.
+   */
+  auto?: boolean;
   /**
    * When true, the orchestrator auto-continues past the iteration limit instead of stopping.
    * Used by the API when the UI sends continueOnLimit: true. Overrides onIterationLimitReached.
@@ -148,6 +157,8 @@ export class ReActOrchestrator {
    *  cycle. This is the "iteration count" reported in task history and phase reports. */
   private iterationCount = 0;
   private health: HealthState = createHealthState();
+  /** ReAct memory with health score tracking (0.0-1.0 scale, with history and trend). */
+  private memory: ReActMemory = { healthScore: { ...DEFAULT_HEALTH_SCORE } };
   private lastNudgeIteration = -Infinity;
   private lastOutcome: "completed" | "iteration_limit" | "plan_rejected" | "partial_success" | "partial_completion" = "completed";
   /** The last ReAct message history from the most recent run() call. Used by runSubagent()
@@ -218,6 +229,109 @@ export class ReActOrchestrator {
   /** Read-only view of this run's rolling self-healing health score (0-100, 100 = no signal yet). */
   getHealthScore(window = 5): number {
     return rollingHealth(this.health, window);
+  }
+
+  /**
+   * Read-only view of the ReAct memory health score (0.0-1.0 scale with history and trend).
+   * Returns the current HealthScore object including current value, history, and trend.
+   */
+  getMemoryHealthScore(): HealthScore {
+    return { ...this.memory.healthScore };
+  }
+
+  /**
+   * Updates the ReAct memory health score after each tool call and observation.
+   *
+   * Two strategies, tried in order:
+   * 1. **LLM self-assessment** — parses the LLM's reasoning for a `score: X` token
+   *    (e.g., `score: 0.7`) on a 0.0-1.0 scale. If found and valid, uses that value.
+   * 2. **Heuristic fallback** — if the last tool call succeeded and produced a non-empty
+   *    observation, increment by 0.1 (capped at 1.0); if it failed or errored, decrement
+   *    by 0.2 (floored at 0.0).
+   *
+   * Appends a ScoreEntry to memory.healthScore.history and recalculates the trend
+   * based on the last 3 entries.
+   */
+  private updateHealthScore(
+    thought: string,
+    toolName: string,
+    observation: unknown,
+    isError: boolean
+  ): void {
+    let newScore: number;
+    let reason: string;
+
+    // Strategy 1: Try to parse a self-assessed score from the LLM's reasoning
+    const parsedScore = this.parseSelfAssessedScore(thought);
+    if (parsedScore !== null) {
+      newScore = parsedScore;
+      reason = `self-assessed score: ${parsedScore.toFixed(2)}`;
+    } else {
+      // Strategy 2: Heuristic fallback based on tool call success/failure
+      const obsStr = typeof observation === "string" ? observation : JSON.stringify(observation);
+      if (isError) {
+        newScore = Math.max(0, this.memory.healthScore.current - 0.2);
+        reason = `tool call errored: ${toolName}`;
+      } else if (obsStr && obsStr.length > 0 && obsStr !== "null" && obsStr !== "undefined") {
+        newScore = Math.min(1.0, this.memory.healthScore.current + 0.1);
+        reason = `tool call succeeded: ${toolName}`;
+      } else {
+        // Tool succeeded but returned empty — mild penalty (no progress)
+        newScore = Math.max(0, this.memory.healthScore.current - 0.05);
+        reason = `tool call returned empty: ${toolName}`;
+      }
+    }
+
+    // Update current score
+    this.memory.healthScore.current = newScore;
+
+    // Append ScoreEntry to history
+    const entry: ScoreEntry = {
+      timestamp: new Date().toISOString(),
+      score: newScore,
+      reason,
+    };
+    this.memory.healthScore.history.push(entry);
+
+    // Recalculate trend based on last 3 entries
+    this.memory.healthScore.trend = this.calculateTrend(
+      this.memory.healthScore.history.slice(-3)
+    );
+  }
+
+  /**
+   * Parses the LLM's reasoning for a self-assessed score token.
+   * Looks for patterns like `score: 0.7` or `score:0.7` on a 0.0-1.0 scale.
+   * Returns the parsed number (0.0-1.0) or null if not found/invalid.
+   */
+  private parseSelfAssessedScore(thought: string): number | null {
+    if (!thought) return null;
+
+    // Match patterns: "score: 0.7", "score:0.7", "score: .7", "score: 1"
+    const match = thought.match(/score\s*:\s*(\d+(?:\.\d+)?|\.\d+)/i);
+    if (!match) return null;
+
+    const value = parseFloat(match[1]);
+    if (isNaN(value) || value < 0 || value > 1) return null;
+
+    return value;
+  }
+
+  /**
+   * Calculates the trend direction based on the last N score entries.
+   * - 'up' if the most recent score is higher than the earliest
+   * - 'down' if the most recent score is lower than the earliest
+   * - 'stable' if they're equal or there's only 1 entry
+   */
+  private calculateTrend(entries: ScoreEntry[]): "up" | "down" | "stable" {
+    if (entries.length < 2) return "stable";
+
+    const first = entries[0].score;
+    const last = entries[entries.length - 1].score;
+
+    if (last > first) return "up";
+    if (last < first) return "down";
+    return "stable";
   }
 
   constructor(
@@ -368,8 +482,10 @@ export class ReActOrchestrator {
           );
           break;
         }
-        // continueOnLimit takes highest priority — auto-continue without asking
-        const shouldContinue = this.opts.continueOnLimit
+        // auto mode takes highest priority — auto-continue without asking
+        const shouldContinue = this.opts.auto
+          ? true
+          : this.opts.continueOnLimit
           ? true
           : this.opts.onIterationLimitReached
           ? await this.opts.onIterationLimitReached(taskDescription, iteration - 1)
@@ -509,7 +625,10 @@ export class ReActOrchestrator {
           // the preserved context (partialOutput). When "no", synthesize a partial
           // completion report from the subagent's accumulated work.
           if (observation.status === "iteration_limit") {
-            const shouldContinue = this.opts.continueOnLimit
+            // auto mode takes highest priority — auto-continue without asking
+            const shouldContinue = this.opts.auto
+              ? true
+              : this.opts.continueOnLimit
               ? true
               : this.opts.onIterationLimitReached
               ? await this.opts.onIterationLimitReached(taskDescription, this.iterationCount)
@@ -760,6 +879,7 @@ export class ReActOrchestrator {
    * - What was accomplished (tools called, files changed, observations made)
    * - What was left incomplete
    * - The last thought/state of the model
+   * - The current health score and trend (e.g., "Health score: 0.8 (trending up)")
    * - A fallback message if nothing useful can be extracted
    */
   private async synthesizeReport(
@@ -829,7 +949,12 @@ export class ReActOrchestrator {
 
     // Mechanical fallback: build a structured report from extracted data
     const parts: string[] = [];
+
+    // Include health score and trend in the opening line
+    const hs = this.memory.healthScore;
+    const healthLine = `Health score: ${hs.current.toFixed(1)} (trending ${hs.trend}) — ${Math.round(hs.current * 100)}% of goal achieved`;
     parts.push(`Task stopped: hit the ${maxIterations}-iteration limit${restartCount > 0 ? ` after ${restartCount} restart(s)` : ""} without reaching a final answer.`);
+    parts.push(`\n${healthLine}.`);
 
     if (toolActions.length > 0) {
       parts.push(`\n## What was done\n\nThe following ${toolActions.length} tool call(s) were made:\n${toolActions.map((a) => `- ${a}`).join("\n")}`);
@@ -900,6 +1025,10 @@ export class ReActOrchestrator {
       conversationTranscript = transcriptParts.join("\n");
     }
 
+    // Include health score and trend in the summary prompt
+    const hs = this.memory.healthScore;
+    const healthLine = `Health score: ${hs.current.toFixed(1)} (trending ${hs.trend}) — ${Math.round(hs.current * 100)}% of goal achieved`;
+
     const summaryPrompt: LlmMessage[] = [
       {
         role: "system",
@@ -907,7 +1036,7 @@ export class ReActOrchestrator {
       },
       {
         role: "user",
-        content: `Task: ${taskDescription}\n\nTool calls made (${toolActions.length}):\n${toolCallsText}\n\nKey observations:\n${observationsText}\n\nLast model thought:\n${lastThought || "(none)"}\n\nIterations: ${maxIterations}${restartCount > 0 ? ` across ${restartCount + 1} restart(s)` : ""}\n\n${conversationTranscript ? `Full conversation transcript:\n${conversationTranscript}` : ""}`,
+        content: `Task: ${taskDescription}\n\n${healthLine}\n\nTool calls made (${toolActions.length}):\n${toolCallsText}\n\nKey observations:\n${observationsText}\n\nLast model thought:\n${lastThought || "(none)"}\n\nIterations: ${maxIterations}${restartCount > 0 ? ` across ${restartCount + 1} restart(s)` : ""}\n\n${conversationTranscript ? `Full conversation transcript:\n${conversationTranscript}` : ""}`,
       },
     ];
 
@@ -1052,6 +1181,13 @@ export class ReActOrchestrator {
     const planMarkdown = await this.generatePlan(taskDescription);
     writeTodo(this.projectRoot, planMarkdown);
 
+    // auto mode takes highest priority — auto-approve without asking
+    if (this.opts.auto) {
+      console.log(`\n--- Plan (tasks/todo.md) ---\n${planMarkdown}`);
+      console.log("(auto mode — plan auto-approved)");
+      return true;
+    }
+
     const interactive = this.opts.interactive !== false; // default true
     if (!interactive) {
       // API context: auto-approve the plan. The caller (/chat endpoint) will return the plan
@@ -1165,21 +1301,26 @@ export class ReActOrchestrator {
     }
 
     // Confirm phases with user in interactive mode
-    const interactive = this.opts.interactive !== false;
-    if (interactive) {
+    // auto mode takes highest priority — auto-approve without asking
+    if (this.opts.auto) {
+      console.log("(auto mode — phase plan auto-approved)");
+    } else {
+      const interactive = this.opts.interactive !== false;
+      if (interactive) {
         console.log(
           `${ANSI_GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${ANSI_RESET}`
         );
-      const rl = readline.createInterface({ input, output });
-      const answer = await rl.question(`${ANSI_GREEN}Proceed with these phases? (yes/no) ${ANSI_RESET}`);
-      rl.close();
+        const rl = readline.createInterface({ input, output });
+        const answer = await rl.question(`${ANSI_GREEN}Proceed with these phases? (yes/no) ${ANSI_RESET}`);
+        rl.close();
         console.log(
           `${ANSI_GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${ANSI_RESET}`
         );
-      if (!/^y(es)?$/i.test(answer.trim())) {
-        console.log("Phase plan rejected. Stopping.");
-        this.lastOutcome = "plan_rejected";
-        return "(No changes were made — the phase plan was not approved before execution.)";
+        if (!/^y(es)?$/i.test(answer.trim())) {
+          console.log("Phase plan rejected. Stopping.");
+          this.lastOutcome = "plan_rejected";
+          return "(No changes were made — the phase plan was not approved before execution.)";
+        }
       }
     }
 
@@ -1405,6 +1546,11 @@ export class ReActOrchestrator {
    * what was accomplished, what was left undone, key decisions made, and blockers
    * encountered. If the LLM call fails or returns empty, it falls back to a mechanical
    * reconstruction of tool calls and observations.
+   *
+   * The report includes the subagent's health score and trend. If the health score is
+   * above the PARTIAL_SUCCESS_THRESHOLD (0.7), the report is prefixed with "partial
+   * success" messaging instead of a generic fallback, giving the parent orchestrator
+   * meaningful partial-completion data.
    */
   private async synthesizeSubagentPartialReport(
     taskDescription: string,
@@ -1414,6 +1560,11 @@ export class ReActOrchestrator {
     observations: string[],
     messages?: LlmMessage[]
   ): Promise<string> {
+    // Determine if this is a "partial success" based on health score threshold
+    const hs = this.memory.healthScore;
+    const isPartialSuccess = hs.current >= 0.7;
+    const healthLine = `Health score: ${hs.current.toFixed(1)} (trending ${hs.trend}) — ${Math.round(hs.current * 100)}% of goal achieved`;
+
     // Try to call the LLM for a coherent summary first.
     // Pass the full message history if available for richer context.
     try {
@@ -1427,7 +1578,8 @@ export class ReActOrchestrator {
         messages // pass full conversation history for richer context
       );
       if (llmSummary && llmSummary.length > 10) {
-        return llmSummary;
+        // Prepend the health score line to the LLM-generated summary
+        return `${healthLine}\n\n${llmSummary}`;
       }
     } catch {
       // LLM call failed — fall through to mechanical fallback
@@ -1435,7 +1587,12 @@ export class ReActOrchestrator {
 
     // Mechanical fallback: build a structured report from extracted data
     const parts: string[] = [];
-    parts.push(`Subagent stopped: hit the iteration limit after ${iterationCount} iterations without reaching a final answer.`);
+
+    if (isPartialSuccess) {
+      parts.push(`Subagent stopped: partial success after ${iterationCount} iterations. ${healthLine}.`);
+    } else {
+      parts.push(`Subagent stopped: hit the iteration limit after ${iterationCount} iterations without reaching a final answer. ${healthLine}.`);
+    }
 
     if (toolCalls.length > 0) {
       parts.push(`\n## What was done\n\nThe following ${toolCalls.length} tool call(s) were made:\n${toolCalls.map((tc) => `- ${tc}`).join("\n")}`);
@@ -1515,7 +1672,16 @@ function buildSystemPrompt(skills: LoadedSkill[], cwd: string): string {
     "starts fresh. If the user says something like 'continue', 'keep going', 'what was the last " +
     "task', or otherwise references earlier work without restating what it was, call " +
     "task_history_tool (action='recent') before doing anything else to find out what that refers " +
-    "to. Don't guess or assume.";
+    "to. Don't guess or assume.\n\n" +
+    "### Health Score Awareness\n" +
+    "Your execution is tracked with a rolling health score (0-100) that measures whether your " +
+    "actions are making progress toward the goal. At each ReAct iteration, evaluate your progress. " +
+    "If your rolling health score drops below 40 (indicating repeated errors, duplicate actions, " +
+    "or stalled progress), propose actions that would increase it — such as re-reading the current " +
+    "state of files instead of assuming, trying a different approach, or verifying assumptions " +
+    "with a fresh tool call. After each tool call, the system automatically scores whether the " +
+    "action moved you closer to completion. Stay aware of this signal and adjust your strategy " +
+    "when the score indicates you're stuck.";
 
   const skillBlocks = skills.length
     ? `\n\nThe following specialized skill directives are loaded for this task — follow their Process/Strategies/Instructions/Planning/Experience guidance:\n\n${skills

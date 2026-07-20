@@ -31,6 +31,7 @@ program
   .option("--no-plan", "force Plan Mode off, regardless of task complexity heuristic")
   .option("--full-context-token", "keep every historical copy of read_tool file snapshots in context instead of collapsing stale ones (see src/core/contextCompaction.ts); default: off, lean-token compaction is on")
   .option("--single-phase", "disable phase-based planning and run as a single ReAct loop; default: phase-planning is ON")
+  .option("--auto", "fully autonomous mode — automatically answers 'yes' to ALL interactive prompts (plan approval, phase plan approval, iteration limit continuation, subagent continuation). The LLM drives end-to-end without any human intervention. Use this for CI/CD, automated testing, or any scenario where zero human input is desired.")
   .option("--isolated-workspace", "run tool operations against an isolated ./workspace-agent copy instead of the live project files (see src/core/workspaceManager.ts); default: off")
   .option("--audit-react", "run the built-in bug-fixing scenario battery through the real orchestrator and report on how it performed")
   .option("--audit-out <path>", "where to write the audit report markdown (default: reports/react-audit-<timestamp>.md)")
@@ -214,6 +215,7 @@ program
     if (opts.fullContextToken) orchestratorOpts.fullContextToken = true;
     if (opts.isolatedWorkspace) orchestratorOpts.isolatedWorkspace = true;
     if (opts.singlePhase) orchestratorOpts.singlePhase = true;
+    if (opts.auto) orchestratorOpts.auto = true;
 
     const llm = new DeepSeekClient(llmConfig, telemetry);
     const orchestrator = new ReActOrchestrator(llm, telemetry, orchestratorOpts);

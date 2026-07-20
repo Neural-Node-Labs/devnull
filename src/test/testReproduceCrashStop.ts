@@ -7,9 +7,11 @@
  *
  * Three scenarios:
  * 1. Main loop iteration limit with synthesizeReport() — should produce a report
+ *    that includes the health score and trend
  * 2. Phase planning fallback (singlePhase=false, default) — sub-orchestrator returns
- *    "(subagent hit iteration limit without completing)" directly
- * 3. Subagent iteration limit — returns generic message without synthesis
+ *    a synthesized report with health score info
+ * 3. Subagent iteration limit — returns a health-score-aware message (partial success
+ *    if score >= 0.7, otherwise a descriptive fallback)
  */
 import { ReActOrchestrator } from "../core/orchestrator.js";
 import { MockLlmClient, toolCall } from "../llm/mockClient.js";

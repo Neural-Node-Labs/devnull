@@ -551,7 +551,209 @@ The following components are **already implemented** and match this design:
 5. **Cap on entries**: Both filesystem backends have caps (200 for JSONL, 50 for Markdown) to
    prevent unbounded file growth. Oldest entries are dropped on append.
 
-## 12. Known Gaps / Honest Limitations
+## 12. Test Architecture
+
+### 12.1 Overview
+
+The devnull test suite is organized into four tiers, each with different dependencies and
+run requirements. Tests are written in TypeScript using **Vitest** (for unit tests) and
+**Playwright** (for browser/E2E tests).
+
+```
+tests/
+├── README.md              # Test suite documentation
+├── vitest.config.ts       # Vitest configuration
+├── fixtures/              # Shared test fixtures
+│   ├── mockLlm.ts         # Mock LLM client for unit tests
+│   └── testServer.ts      # Test API server helper
+├── unit/                  # Pure unit tests (no external deps)
+│   ├── auth.test.ts
+│   ├── config.test.ts
+│   ├── contextCompaction.test.ts
+│   ├── duplicateActionDetector.test.ts
+│   ├── goalValidator.test.ts
+│   ├── ignoreRules.test.ts
+│   ├── llmKeyStore.test.ts
+│   ├── projectStore.test.ts
+│   ├── protocol.test.ts
+│   ├── skillRegistry.test.ts
+│   ├── stepScorer.test.ts
+│   ├── taskHistory.test.ts
+│   └── workspaceManager.test.ts
+└── pages/                 # Playwright page-level UI tests
+    ├── helpers.ts         # Shared helpers (loginAsAdmin, navigateTo, etc.)
+    ├── login-page.spec.ts
+    ├── home-page.spec.ts
+    ├── chat-page.spec.ts
+    ├── projects-page.spec.ts
+    ├── telemetry-page.spec.ts
+    ├── settings-page.spec.ts
+    ├── admin-page.spec.ts
+    ├── diagnostics-page.spec.ts
+    ├── plans-page.spec.ts
+    ├── plan-detail-page.spec.ts
+    └── task-history-page.spec.ts
+
+e2e/                       # E2E deployment tests (Playwright)
+├── playwright.config.ts   # Playwright config (API-focused)
+├── deploy-test.spec.ts    # API health + UI smoke tests
+└── plans-ui-test.spec.ts  # Plans page E2E tests
+
+ui-test-suited/            # Comprehensive UI test suite
+├── playwright.config.ts   # Shared Playwright config (UI-focused)
+├── health.spec.ts
+├── homepage.spec.ts
+├── chat-flow.spec.ts
+├── project-management.spec.ts
+├── settings.spec.ts
+├── telemetry.spec.ts
+├── admin.spec.ts
+├── diagnostic.spec.ts
+└── api-user-management.spec.ts
+```
+
+### 12.2 Test Runner Configuration
+
+#### Vitest (Unit Tests)
+
+Configuration in `tests/vitest.config.ts`:
+
+```typescript
+import { defineConfig } from "vitest/config";
+
+export default defineConfig({
+  test: {
+    include: ["tests/**/*.test.ts"],
+    exclude: ["node_modules", "dist", ".agent", "workspace-*"],
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
+    globals: true,
+  },
+});
+```
+
+- **Pattern**: `tests/**/*.test.ts` — all unit test files use `.test.ts` extension
+- **Timeout**: 30 seconds per test (generous for filesystem operations)
+- **Globals**: `true` — `describe`, `it`, `expect` available without imports
+- **No external dependencies**: Unit tests mock all I/O or use temp directories
+
+#### Playwright (Page Tests + E2E)
+
+The shared Playwright configuration lives in `ui-test-suited/playwright.config.ts`:
+
+```typescript
+import { defineConfig } from "@playwright/test";
+
+export default defineConfig({
+  testDir: ".",
+  timeout: 30_000,
+  expect: { timeout: 10_000 },
+  use: {
+    baseURL: "http://localhost:8080",
+    extraHTTPHeaders: { "Content-Type": "application/json" },
+    screenshot: "only-on-failure",
+    trace: "retain-on-failure",
+  },
+  projects: [
+    { name: "ui-tests", testMatch: "**/*.spec.ts" },
+  ],
+  reporter: [
+    ["list"],
+    ["html", { outputFolder: "playwright-report" }],
+  ],
+});
+```
+
+- **baseURL**: `http://localhost:8080` (the UI dev server / nginx proxy)
+- **Screenshots**: Captured only on failure for debugging
+- **Traces**: Retained on failure for CI debugging
+- **Reporter**: List (console) + HTML (for CI artifacts)
+
+### 12.3 Page Object Pattern
+
+The page tests use a **lightweight helper pattern** rather than full Page Object Model
+classes. This was chosen because:
+
+1. **Minimal abstraction overhead** — each page has 5-15 tests, not hundreds
+2. **Direct selector visibility** — tests read like a user's interaction flow
+3. **Shared helpers** — common operations (login, navigation) are extracted to
+   `tests/pages/helpers.ts` without the ceremony of full page classes
+
+**Shared Helpers** (`tests/pages/helpers.ts`):
+
+```typescript
+import { Page, expect } from "@playwright/test";
+
+export const UI_BASE = "http://localhost:8080";
+export const API_BASE = "http://localhost:3001";
+
+// Logs in as admin via the UI login form
+export async function loginAsAdmin(page: Page) {
+  await page.goto(`${UI_BASE}/login`);
+  await page.fill("#username", "admin");
+  await page.fill("#password", "admin1234");
+  await page.click("button[type='submit']");
+  await page.waitForURL("**/");
+}
+
+// Navigate to a page and wait for it to load
+export async function navigateTo(page: Page, path: string) {
+  await page.goto(`${UI_BASE}${path}`);
+  await page.waitForLoadState("networkidle");
+}
+
+// Register the first admin user if no users exist yet
+export async function registerFirstUser(page: Page) {
+  await page.goto(`${UI_BASE}/login`);
+  await page.waitForLoadState("networkidle");
+  const registerBtn = page.locator("button[type='submit']");
+  const btnText = await registerBtn.textContent();
+  if (btnText?.includes("Register")) {
+    await page.fill("#username", "admin");
+    await page.fill("#password", "admin1234");
+    await registerBtn.click();
+    await page.waitForURL("**/");
+    return true;
+  }
+  return false;
+}
+```
+
+### 12.4 Test Data Strategy
+
+| Concern | Strategy |
+|---|---|
+| **Auth tokens** | Generated fresh per test via `generateToken()` in unit tests; obtained via UI login flow in page tests |
+| **Users** | In-memory store reset in `beforeEach` for unit tests; admin user created via registration flow in page tests |
+| **Projects** | Created via UI form in page tests; in-memory store in unit tests |
+| **LLM keys** | In-memory store in unit tests; UI form interaction in page tests |
+| **Task history** | Temp directory with JSONL/Markdown files in unit tests; empty state in page tests |
+| **Phase reports / WBS** | Temp directory in unit tests; empty state in page tests |
+| **File system** | `fs.mkdtempSync()` for isolated temp directories in unit tests; real workspace in page tests |
+| **API responses** | Real API calls in page tests (no mocking); mocked via `mockLlm.ts` in unit tests |
+
+**Key principles:**
+- **Unit tests never touch external services** — all I/O is mocked or uses temp directories
+- **Page tests test against a real running stack** — no API mocking, tests exercise the full
+  frontend-to-backend path
+- **Test data is ephemeral** — created in `beforeEach` and cleaned up in `afterEach`
+- **Empty states are first-class scenarios** — every page test verifies the empty/loading
+  state before testing populated states
+
+### 12.5 Test Execution Order
+
+Tests are designed to be **independent and parallelizable**:
+
+1. **Unit tests** (`vitest`) — fully parallel, no shared state
+2. **Page tests** (`playwright`) — sequential per-file, parallel across files
+3. **E2E tests** (`playwright`) — sequential, depend on Docker stack
+4. **Comprehensive UI tests** (`playwright`) — sequential, depend on Docker stack
+
+### 12.6 CI Integration
+
+See `README.md` → "CI Integration" for the recommended GitHub Actions workflow.
+
+## 13. Known Gaps / Honest Limitations
 
 - **DB writes are best-effort, not transactional with file writes**: If the DB write
   fails after the file write succeeds, the data is inconsistent until the next sync.
