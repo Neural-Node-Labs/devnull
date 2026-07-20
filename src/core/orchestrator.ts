@@ -927,18 +927,20 @@ export class ReActOrchestrator {
       }
     }
 
-    // Try to call the LLM for a coherent summary first.
-    // Pass the full message history so the LLM has rich context for generating
-    // the structured report (what was accomplished, left undone, key decisions, blockers).
+    // CA1 (P0): Make callLlmForSummary() the PRIMARY path for summary generation.
+    // Pass the FULL message history (untruncated) so the LLM has rich context for
+    // generating a structured report covering what was accomplished, left undone,
+    // key decisions, and blockers encountered.
+    //
+    // The cost of one extra LLM call at the end of a task is negligible compared
+    // to the cost of the main ReAct loop. Only fall back to mechanical reconstruction
+    // if the LLM call fails or returns empty.
     try {
       const llmSummary = await this.callLlmForSummary(
         taskDescription,
-        toolActions,
-        observations,
-        lastThought,
+        messages, // pass full message history — no truncation
         maxIterations,
-        restartCount,
-        messages // pass full conversation history for richer context
+        restartCount
       );
       if (llmSummary && llmSummary.length > 10) {
         return llmSummary;
@@ -986,44 +988,52 @@ export class ReActOrchestrator {
    *
    * Returns the LLM's report text, or an empty string if the call fails.
    */
+  /**
+   * Calls the LLM to generate a structured report of what was accomplished vs. left undone
+   * during a ReAct loop that hit the iteration limit.
+   *
+   * CA1+CA3 (P0): This is now the PRIMARY path for summary generation (not a fallback).
+   * The FULL message history is passed without truncation so the LLM has maximum context
+   * for generating a coherent summary. The cost of one extra LLM call at the end of a task
+   * is negligible compared to the cost of the main ReAct loop.
+   *
+   * The report covers four sections:
+   * 1. **What was accomplished** — concrete actions taken
+   * 2. **What was left undone** — what the task still needs
+   * 3. **Key decisions made** — important choices or trade-offs
+   * 4. **Blockers encountered** — errors, unexpected results, or obstacles
+   *
+   * Returns the LLM's report text, or an empty string if the call fails.
+   */
   private async callLlmForSummary(
     taskDescription: string,
-    toolActions: string[],
-    observations: string[],
-    lastThought: string,
+    messages: LlmMessage[],
     maxIterations: number,
-    restartCount: number,
-    messages?: LlmMessage[]
+    restartCount: number
   ): Promise<string> {
-    const toolCallsText = toolActions.length > 0
-      ? toolActions.map((a) => `- ${a}`).join("\n")
-      : "(none)";
-    const observationsText = observations.length > 0
-      ? observations.slice(-5).map((o) => `- ${o}`).join("\n")
-      : "(none)";
-
-    // Build a condensed conversation transcript from the full message history if available
-    let conversationTranscript = "";
-    if (messages && messages.length > 0) {
-      const transcriptParts: string[] = [];
-      for (const msg of messages) {
-        if (msg.role === "system") continue; // skip system prompt
-        if (msg.role === "user" && msg.content) {
-          transcriptParts.push(`[User] ${msg.content.slice(0, 300)}`);
-        } else if (msg.role === "assistant" && msg.content) {
-          transcriptParts.push(`[Assistant] ${msg.content.slice(0, 300)}`);
-          if (msg.tool_calls) {
-            for (const tc of msg.tool_calls) {
-              transcriptParts.push(`  → Tool call: ${tc.function.name}(${tc.function.arguments.slice(0, 150)})`);
-            }
+    // Build a full conversation transcript from the message history.
+    // CA3 (P0): No truncation — pass the full context so the LLM can generate
+    // a rich, accurate summary. We skip the system prompt (too verbose) but
+    // include everything else: user messages, assistant thoughts, tool calls,
+    // and observations in their entirety.
+    const transcriptParts: string[] = [];
+    for (const msg of messages) {
+      if (msg.role === "system") continue; // skip system prompt
+      if (msg.role === "user" && msg.content) {
+        transcriptParts.push(`[User] ${msg.content}`);
+      } else if (msg.role === "assistant" && msg.content) {
+        transcriptParts.push(`[Assistant] ${msg.content}`);
+        if (msg.tool_calls) {
+          for (const tc of msg.tool_calls) {
+            transcriptParts.push(`  → Tool call: ${tc.function.name}(${tc.function.arguments})`);
           }
-        } else if (msg.role === "tool" && msg.content) {
-          const obs = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
-          transcriptParts.push(`  [Observation] ${obs.slice(0, 200)}`);
         }
+      } else if (msg.role === "tool" && msg.content) {
+        const obs = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+        transcriptParts.push(`  [Observation] ${obs}`);
       }
-      conversationTranscript = transcriptParts.join("\n");
     }
+    const conversationTranscript = transcriptParts.join("\n");
 
     // Include health score and trend in the summary prompt
     const hs = this.memory.healthScore;
@@ -1032,11 +1042,11 @@ export class ReActOrchestrator {
     const summaryPrompt: LlmMessage[] = [
       {
         role: "system",
-        content: "You are a summarization assistant. Given a task description and the record of a ReAct loop that hit its iteration limit, produce a structured report with exactly four sections:\n\n## What was accomplished\nList the concrete actions taken: files read, files changed, commands run, tests executed, tool calls made. Be specific about what was done.\n\n## What was left undone\nDescribe what the task still needs that wasn't completed. Be honest about gaps.\n\n## Key decisions made\nNote any important choices or trade-offs made during execution — e.g., which approach was chosen, what was prioritized, what was deferred.\n\n## Blockers encountered\nList any errors, unexpected results, or obstacles that prevented further progress. If none were encountered, state \"No blockers encountered.\"\n\nBe factual and concise. Use bullet points for each section. Do not include the iteration limit details — those are already known.",
+        content: "You are a summarization assistant. Given a task description and the full conversation transcript of a ReAct loop that hit its iteration limit, produce a structured report with exactly four sections:\n\n## What was accomplished\nList the concrete actions taken: files read, files changed, commands run, tests executed, tool calls made. Be specific about what was done — reference actual file paths, command outputs, and results.\n\n## What was left undone\nDescribe what the task still needs that wasn't completed. Be honest about gaps.\n\n## Key decisions made\nNote any important choices or trade-offs made during execution — e.g., which approach was chosen, what was prioritized, what was deferred.\n\n## Blockers encountered\nList any errors, unexpected results, or obstacles that prevented further progress. If none were encountered, state \"No blockers encountered.\"\n\nBe factual and concise. Use bullet points for each section. Do not include the iteration limit details — those are already known.",
       },
       {
         role: "user",
-        content: `Task: ${taskDescription}\n\n${healthLine}\n\nTool calls made (${toolActions.length}):\n${toolCallsText}\n\nKey observations:\n${observationsText}\n\nLast model thought:\n${lastThought || "(none)"}\n\nIterations: ${maxIterations}${restartCount > 0 ? ` across ${restartCount + 1} restart(s)` : ""}\n\n${conversationTranscript ? `Full conversation transcript:\n${conversationTranscript}` : ""}`,
+        content: `Task: ${taskDescription}\n\n${healthLine}\n\nIterations: ${maxIterations}${restartCount > 0 ? ` across ${restartCount + 1} restart(s)` : ""}\n\nFull conversation transcript:\n${conversationTranscript}`,
       },
     ];
 
@@ -1570,12 +1580,9 @@ export class ReActOrchestrator {
     try {
       const llmSummary = await this.callLlmForSummary(
         taskDescription,
-        toolCalls,
-        observations,
-        lastThought,
+        messages ?? [], // pass full message history — no truncation
         iterationCount,
-        0,
-        messages // pass full conversation history for richer context
+        0
       );
       if (llmSummary && llmSummary.length > 10) {
         // Prepend the health score line to the LLM-generated summary

@@ -49,11 +49,15 @@ async function testMainLoopSynthesizesReport() {
   const cwd = path.join(cwdBase, "repro-mainloop");
   fs.mkdirSync(cwd, { recursive: true });
 
-  // Model makes 3 tool calls (past maxIterations=2), never produces a final answer
+  // Model makes 3 tool calls (past maxIterations=2), never produces a final answer.
+  // After hitting the iteration limit, synthesizeReport() calls callLlmForSummary()
+  // as the primary path (CA1 P0 fix), so we need a 4th mock response for the summary LLM call.
   const mock = new MockLlmClient([
     { content: "Reading file...", toolCalls: [toolCall("c1", "run_command_tool", { command: "echo step1" })] },
     { content: "Processing...", toolCalls: [toolCall("c2", "run_command_tool", { command: "echo step2" })] },
     { content: "Still working...", toolCalls: [toolCall("c3", "run_command_tool", { command: "echo step3" })] },
+    // Summary LLM call from synthesizeReport() -> callLlmForSummary()
+    { content: "## What was accomplished\n- Ran step1, step2, step3\n\n## What was left undone\n- Nothing\n\n## Key decisions made\n- Sequential execution\n\n## Blockers encountered\n- None", toolCalls: [] },
   ]);
   const telemetry = new FileTelemetry(cwd);
   const orchestrator = new ReActOrchestrator(mock, telemetry, {
@@ -68,9 +72,10 @@ async function testMainLoopSynthesizesReport() {
   const result = await orchestrator.run("do three sequential steps");
   const outcome = orchestrator.getLastOutcome();
 
-  // The outcome should be "iteration_limit" since we declined to continue
-  if (outcome !== "iteration_limit") {
-    fail(`Expected outcome "iteration_limit", got "${outcome}"`);
+  // After Phase 4 fix, the orchestrator sets lastOutcome = "partial_success" before
+  // calling synthesizeReport() when the user declines to continue.
+  if (outcome !== "partial_success") {
+    fail(`Expected outcome "partial_success", got "${outcome}"`);
     return;
   }
 
@@ -86,7 +91,8 @@ async function testMainLoopSynthesizesReport() {
     result.includes("Task stopped") ||
     result.includes("maxIterations") ||
     result.includes("tool call") ||
-    result.includes("What was done");
+    result.includes("What was done") ||
+    result.includes("What was accomplished");
 
   if (!hasUsefulContent) {
     fail(`Result does not contain useful summary content. Got: "${result.slice(0, 200)}..."`);
@@ -114,11 +120,19 @@ async function testPhasePlanningFallbackNoReport() {
   const cwd = path.join(cwdBase, "repro-phaseplan");
   fs.mkdirSync(cwd, { recursive: true });
 
-  // Model makes tool calls, never produces phase headings or final answer
+  // Model makes tool calls, never produces phase headings or final answer.
+  // Flow: 1) phase generation LLM call (no tool calls, no phase headings),
+  // then 2-4) sub-orchestrator makes 3 tool calls, hits iteration limit,
+  // then 5) synthesizeReport() -> callLlmForSummary() needs a 5th response.
   const mock = new MockLlmClient([
-    { content: "Step 1 thinking...", toolCalls: [toolCall("c1", "run_command_tool", { command: "echo step1" })] },
-    { content: "Step 2 thinking...", toolCalls: [toolCall("c2", "run_command_tool", { command: "echo step2" })] },
-    { content: "Step 3 thinking...", toolCalls: [toolCall("c3", "run_command_tool", { command: "echo step3" })] },
+    // Response 1: Phase generation — no tool calls, no phase headings (triggers fallback)
+    { content: "Step 1 thinking...", toolCalls: [] },
+    // Responses 2-4: Sub-orchestrator tool calls
+    { content: "Step 2 thinking...", toolCalls: [toolCall("c1", "run_command_tool", { command: "echo step1" })] },
+    { content: "Step 3 thinking...", toolCalls: [toolCall("c2", "run_command_tool", { command: "echo step2" })] },
+    { content: "Still working...", toolCalls: [toolCall("c3", "run_command_tool", { command: "echo step3" })] },
+    // Response 5: Summary LLM call from synthesizeReport() -> callLlmForSummary()
+    { content: "## What was accomplished\n- Ran step1, step2, step3\n\n## What was left undone\n- Nothing\n\n## Key decisions made\n- Sequential execution\n\n## Blockers encountered\n- None", toolCalls: [] },
   ]);
   const telemetry = new FileTelemetry(cwd);
   const orchestrator = new ReActOrchestrator(mock, telemetry, {
