@@ -2,7 +2,7 @@ import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import fs from "node:fs";
 import path from "node:path";
-import { LlmClient, LlmMessage, ReActStep, TelemetryInterface, LoadedSkill, Phase, LlmUsage } from "./types.js";
+import { LlmClient, LlmMessage, ReActStep, TelemetryInterface, LoadedSkill, Phase, LlmUsage, SubagentResult } from "./types.js";
 import { SkillRegistry } from "./skillRegistry.js";
 import { TOOL_SCHEMAS } from "../tools/toolSchemas.js";
 import { dispatchToolCall } from "../tools/toolDispatcher.js";
@@ -145,6 +145,10 @@ export class ReActOrchestrator {
   private health: HealthState = createHealthState();
   private lastNudgeIteration = -Infinity;
   private lastOutcome: "completed" | "iteration_limit" | "plan_rejected" | "partial_success" = "completed";
+  /** The last ReAct message history from the most recent run() call. Used by runSubagent()
+   *  to extract accumulated context (tool calls, observations, last thought) when a subagent
+   *  hits the iteration limit. */
+  private lastMessages: LlmMessage[] = [];
 
   /** How the most recent run() call ended. "completed" means a genuine final answer was
    *  reached; "partial_success" means the iteration limit was hit but meaningful progress
@@ -153,6 +157,25 @@ export class ReActOrchestrator {
    *  that distinction rather than treating it as a normal success. */
   getLastOutcome(): "completed" | "iteration_limit" | "plan_rejected" | "partial_success" {
     return this.lastOutcome;
+  }
+
+  /**
+   * When a subagent hit the iteration limit and the user declined to continue (or the API
+   * returned false from onIterationLimitReached), this contains the subagent's preserved
+   * context so the API can pass it back to the UI for a "Continue" button that preserves
+   * the subagent's progress. Undefined when no subagent limit was encountered.
+   */
+  private subagentLimitContext?: {
+    lastThought: string;
+    toolCalls: string[];
+    observations: string[];
+    iterationCount: number;
+  };
+
+  /** Read-only view of the subagent limit context, if any. Used by the API to include
+   *  preserved subagent context in limitation responses so the UI can re-send it. */
+  getSubagentLimitContext(): { lastThought: string; toolCalls: string[]; observations: string[]; iterationCount: number } | undefined {
+    return this.subagentLimitContext;
   }
 
   /** Read-only view of this run's rolling self-healing health score (0-100, 100 = no signal yet). */
@@ -184,6 +207,13 @@ export class ReActOrchestrator {
   /** Read-only view of this run's total ReAct loop iterations (includes subagent iterations). */
   getIterationCount(): number {
     return this.iterationCount;
+  }
+
+  /** Read-only view of the last ReAct message history from the most recent run() call.
+   *  Used by runSubagent() to extract accumulated context (tool calls, observations,
+   *  last thought) when a subagent hits the iteration limit. */
+  getLastMessages(): LlmMessage[] {
+    return this.lastMessages;
   }
 
   private addUsage(usage: LlmUsage | undefined): void {
@@ -430,6 +460,60 @@ export class ReActOrchestrator {
             action: { tool: "subagent_tool", input: safeParse(call.function.arguments) },
             observation,
           });
+
+          // If the subagent hit the iteration limit, ask the user whether to continue.
+          // When "yes", reset the subagent's iteration counter and re-invoke it with
+          // the preserved context (partialOutput). When "no", synthesize a partial
+          // completion report from the subagent's accumulated work.
+          if (observation.status === "iteration_limit") {
+            const shouldContinue = this.opts.continueOnLimit
+              ? true
+              : this.opts.onIterationLimitReached
+              ? await this.opts.onIterationLimitReached(taskDescription, this.iterationCount)
+              : await this.askContinueSubagent(
+                  taskDescription,
+                  observation.iterationCount,
+                  observation.partialOutput?.lastThought ?? "",
+                  observation.partialOutput?.toolCalls ?? [],
+                  observation.partialOutput?.observations ?? []
+                );
+
+            if (shouldContinue) {
+              // Re-invoke the subagent with preserved context. We pass the subagent's
+              // accumulated context (last thought, tool calls, observations) as additional
+              // context so the new subagent run can pick up where the previous one left off.
+              const continuationTask = `${JSON.parse(call.function.arguments).task}\n\n[CONTINUATION — previous subagent run hit the iteration limit after ${observation.iterationCount} iterations. The following context was preserved from the previous run:]\n\nLast thought:\n${observation.partialOutput?.lastThought ?? "(none)"}\n\nTool calls made:\n${(observation.partialOutput?.toolCalls ?? []).map((tc) => `- ${tc}`).join("\n")}\n\nKey observations:\n${(observation.partialOutput?.observations ?? []).map((o) => `- ${o}`).join("\n")}\n\nContinue from where you left off. Do not repeat work that was already completed.`;
+              const continuationArgs = JSON.stringify({ task: continuationTask });
+              const continuationResult = await this.runSubagent(continuationArgs);
+              if (showConsole) reportObservation(continuationResult, false, indent);
+              // Use the continuation result as the final observation for this subagent call
+              messages.push({ role: "tool", tool_call_id: call.id, name: "subagent_tool", content: JSON.stringify(continuationResult) });
+              continue;
+            } else {
+              // User declined to continue — synthesize a partial completion report
+              // from the subagent's accumulated work and use that as the observation.
+              // Also store the subagent's preserved context so the API can pass it
+              // back to the UI for a "Continue" button that preserves the subagent's
+              // progress (see getSubagentLimitContext()).
+              this.subagentLimitContext = {
+                lastThought: observation.partialOutput?.lastThought ?? "",
+                toolCalls: observation.partialOutput?.toolCalls ?? [],
+                observations: observation.partialOutput?.observations ?? [],
+                iterationCount: observation.iterationCount,
+              };
+              this.lastOutcome = "partial_success";
+              const partialReport = this.synthesizeSubagentPartialReport(
+                taskDescription,
+                observation.iterationCount,
+                observation.partialOutput?.lastThought ?? "",
+                observation.partialOutput?.toolCalls ?? [],
+                observation.partialOutput?.observations ?? []
+              );
+              messages.push({ role: "tool", tool_call_id: call.id, name: "subagent_tool", content: JSON.stringify({ status: "partial_success", summary: partialReport, iterationCount: observation.iterationCount }) });
+              continue;
+            }
+          }
+
           messages.push({ role: "tool", tool_call_id: call.id, name: "subagent_tool", content: JSON.stringify(observation) });
           continue;
         }
@@ -606,15 +690,23 @@ export class ReActOrchestrator {
 
   /**
    * Delegates a focused task to a fresh orchestrator instance with isolated message history.
-   * Only the final text summary is returned to the caller — matches "Subagent Strategy":
-   * offload research/exploration to keep the main context window clean.
+   * Returns a structured SubagentResult that includes the subagent's outcome status
+   * ("completed" or "iteration_limit"), its final summary, iteration count, and — when
+   * the iteration limit was hit — accumulated context (last thought, tool calls, observations)
+   * so the parent orchestrator can decide whether to continue, retry, or synthesize a
+   * partial report. The subagent NEVER terminates the parent just because it hit its own
+   * iteration limit.
    */
-  private async runSubagent(argsJson: string): Promise<{ summary: string }> {
+  private async runSubagent(argsJson: string): Promise<SubagentResult> {
     let task: string;
     try {
       task = JSON.parse(argsJson).task;
     } catch {
-      return { summary: "subagent_tool error: invalid arguments" };
+      return {
+        status: "completed",
+        summary: "subagent_tool error: invalid arguments",
+        iterationCount: 0,
+      };
     }
     const sub = new ReActOrchestrator(this.llm, this.telemetry, {
       ...this.opts,
@@ -624,7 +716,58 @@ export class ReActOrchestrator {
     });
     const result = await sub.run(task, { skipPlanMode: true, isSubagent: true });
     this.absorbSubagentUsage(sub);
-    return { summary: result };
+
+    const subOutcome = sub.getLastOutcome();
+    const iterationCount = sub.getIterationCount();
+
+    if (subOutcome === "partial_success" || subOutcome === "iteration_limit") {
+      // The subagent hit the iteration limit. Extract accumulated context from its
+      // message history so the parent can make an informed decision about what to do next.
+      const subMessages = sub.getLastMessages();
+      const toolCalls: string[] = [];
+      const observations: string[] = [];
+      let lastThought = "";
+
+      for (const msg of subMessages) {
+        if (msg.role === "assistant" && msg.content) {
+          lastThought = msg.content;
+        }
+        if (msg.role === "assistant" && msg.tool_calls) {
+          for (const tc of msg.tool_calls) {
+            try {
+              const args = JSON.parse(tc.function.arguments);
+              const argSummary = Object.keys(args).length > 0
+                ? `(${Object.entries(args).map(([k, v]) => `${k}=${String(v).slice(0, 60)}`).join(", ")})`
+                : "";
+              toolCalls.push(`${tc.function.name} ${argSummary}`);
+            } catch {
+              toolCalls.push(tc.function.name);
+            }
+          }
+        }
+        if (msg.role === "tool" && msg.content) {
+          const content = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+          observations.push(content.slice(0, 200));
+        }
+      }
+
+      return {
+        status: "iteration_limit",
+        summary: result,
+        iterationCount,
+        partialOutput: {
+          lastThought,
+          toolCalls,
+          observations,
+        },
+      };
+    }
+
+    return {
+      status: "completed",
+      summary: result,
+      iterationCount,
+    };
   }
 
   /**
@@ -960,6 +1103,90 @@ export class ReActOrchestrator {
     );
     rl.close();
     return /^y(es)?$/i.test(answer.trim());
+  }
+
+  /**
+   * Prompts the user about whether to continue a subagent that hit the iteration limit.
+   * Shows the subagent's accumulated context (last thought, tool calls, observations) so
+   * the user can make an informed decision. Returns true to continue, false to stop and
+   * synthesize a partial report.
+   *
+   * In non-interactive mode (API context), auto-continues rather than hanging on stdin.
+   */
+  private async askContinueSubagent(
+    taskDescription: string,
+    iterationCount: number,
+    lastThought: string,
+    toolCalls: string[],
+    observations: string[]
+  ): Promise<boolean> {
+    const ANSI_YELLOW = "\x1b[33m";
+    const ANSI_RESET = "\x1b[0m";
+    const interactive = this.opts.interactive !== false; // default true
+    if (!interactive) {
+      console.log(`\nSubagent iteration limit reached (${iterationCount} iterations) — non-interactive mode, auto-continuing.`);
+      return true;
+    }
+    const rl = readline.createInterface({ input, output });
+    console.log(
+      `\n${ANSI_YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${ANSI_RESET}`
+    );
+    console.log(
+      `${ANSI_YELLOW}▶ SUBAGENT ITERATION LIMIT REACHED — Continue?${ANSI_RESET}`
+    );
+    console.log(
+      `${ANSI_YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${ANSI_RESET}`
+    );
+    console.log(`\nSubagent task: "${taskDescription}"`);
+    console.log(`Iterations completed: ${iterationCount}`);
+    if (lastThought) {
+      console.log(`\nLast thought: ${lastThought.slice(0, 300)}`);
+    }
+    if (toolCalls.length > 0) {
+      console.log(`\nTool calls made (${toolCalls.length}):`);
+      toolCalls.slice(-5).forEach((tc) => console.log(`  - ${tc}`));
+      if (toolCalls.length > 5) {
+        console.log(`  ... and ${toolCalls.length - 5} more`);
+      }
+    }
+    const answer = await rl.question(
+      `\n${ANSI_YELLOW}Continue the subagent for another round? (yes/no) ${ANSI_RESET}`
+    );
+    rl.close();
+    return /^y(es)?$/i.test(answer.trim());
+  }
+
+  /**
+   * Synthesizes a partial completion report from a subagent's accumulated work when the
+   * user declines to continue after an iteration limit hit. This ensures the parent
+   * orchestrator gets useful information about what was accomplished, rather than an
+   * empty or generic fallback message.
+   */
+  private synthesizeSubagentPartialReport(
+    taskDescription: string,
+    iterationCount: number,
+    lastThought: string,
+    toolCalls: string[],
+    observations: string[]
+  ): string {
+    const parts: string[] = [];
+    parts.push(`Subagent stopped: hit the iteration limit after ${iterationCount} iterations without reaching a final answer.`);
+
+    if (toolCalls.length > 0) {
+      parts.push(`\n## What was done\n\nThe following ${toolCalls.length} tool call(s) were made:\n${toolCalls.map((tc) => `- ${tc}`).join("\n")}`);
+    }
+
+    if (lastThought) {
+      parts.push(`\n## Last thought\n\n${lastThought.slice(0, 500)}`);
+    }
+
+    if (observations.length > 0) {
+      parts.push(`\n## Key observations\n\n${observations.slice(-3).map((o) => `- ${o}`).join("\n")}`);
+    }
+
+    parts.push(`\n## Next steps\n\nPartial progress was made. The parent orchestrator should continue with the information gathered so far.`);
+
+    return parts.join("\n");
   }
 }
 

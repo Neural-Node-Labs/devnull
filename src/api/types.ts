@@ -56,6 +56,21 @@ export interface ChatResponse {
   /** When true, the run stopped because the iteration limit was reached. The UI should
    *  highlight the limitation message in red to distinguish it from other limitation types. */
   iterationMaxReached?: boolean;
+  /**
+   * When present, a subagent hit its iteration limit and the preserved context is included
+   * so the UI can re-send it with continueOnLimit: true to resume the subagent without
+   * losing progress. Contains the subagent's last thought, tool calls, and observations.
+   */
+  subagentContext?: {
+    /** The subagent's last assistant message content before hitting the limit. */
+    lastThought: string;
+    /** Summary of tool calls made by the subagent. */
+    toolCalls: string[];
+    /** Key observations from the subagent's execution. */
+    observations: string[];
+    /** How many iterations the subagent completed before hitting the limit. */
+    iterationCount: number;
+  };
 }
 
 /** POST /api/v1/chat/plan request body. */

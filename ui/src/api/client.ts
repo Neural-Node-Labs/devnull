@@ -145,6 +145,15 @@ export interface ChatResult {
   usage?: UsageInfo;
   healthScore?: number;
   limitation?: string;
+  /** When present, a subagent hit its iteration limit and the preserved context is included
+   *  so the UI can re-send it with continueOnLimit: true to resume the subagent without
+   *  losing progress. */
+  subagentContext?: {
+    lastThought: string;
+    toolCalls: string[];
+    observations: string[];
+    iterationCount: number;
+  };
 }
 
 // ─── HTTP Helpers ───────────────────────────────────────────────────────────

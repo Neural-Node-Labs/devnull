@@ -84,6 +84,34 @@ export interface LlmClient {
   ): Promise<LlmResponse>;
 }
 
+/**
+ * Structured result returned when a subagent finishes execution, whether by completing
+ * normally or hitting the iteration limit. The parent orchestrator uses this to decide
+ * whether to continue, retry, or synthesize a partial report — the subagent never
+ * terminates the parent just because it hit its own iteration limit.
+ */
+export interface SubagentResult {
+  /** "completed" = the subagent reached a final answer; "iteration_limit" = it ran out of iterations. */
+  status: "completed" | "iteration_limit";
+  /** The subagent's final output text (synthesized report if iteration_limit). */
+  summary: string;
+  /** How many ReAct iterations the subagent executed. */
+  iterationCount: number;
+  /**
+   * When status is "iteration_limit", this contains the subagent's accumulated context:
+   * the last assistant thought, tool calls made, and key observations. The parent can
+   * use this to decide whether to retry, continue, or synthesize a partial report.
+   */
+  partialOutput?: {
+    /** The last assistant message content (the model's last thought before hitting the limit). */
+    lastThought: string;
+    /** Summary of tool calls made by the subagent. */
+    toolCalls: string[];
+    /** Key observations from the subagent's execution. */
+    observations: string[];
+  };
+}
+
 export interface IndexEntry {
   filename: string;
   filepath: string;
