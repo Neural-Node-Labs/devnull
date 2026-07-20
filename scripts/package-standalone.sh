@@ -514,4 +514,119 @@ step_validate() {
   echo ""
   echo "══════════════════════════════════════════════════════════════════════"
   echo "  Step 7: Validate Package"
-  echo "════════════════════════════════
+    echo "  Step 7: Validate Package"
+  echo "════════════════════════════════"
+
+  local errors=0
+
+  # Required files/directories
+  local required_paths=(
+    "dist/cli/index.js:CLI entry point"
+    "dist/api/server.js:API server module"
+    "dist/core/orchestrator.js:Orchestrator module"
+    "dist/tools/toolDispatcher.js:Tool dispatcher"
+    "node_modules:node_modules/ (production deps)"
+    "agent/devnull.md:Engineering protocol"
+    "agent/config/llm.yaml:LLM config"
+    "agent/skills:Skills directory"
+    "migrations/sqlite:SQLite migrations"
+    "devnull-server.sh:Launcher script"
+    "package.json:Package manifest"
+    ".env.example:Environment template"
+    "README.md:README"
+  )
+
+  for entry in "${required_paths[@]}"; do
+    local path="${entry%%:*}"
+    local label="${entry#*:}"
+    local full_path="${OUTPUT_DIR}/${path}"
+
+    if [ -e "$full_path" ]; then
+      success "  ${label}: ${path}"
+    else
+      error "  ${label}: ${path} - MISSING!"
+      errors=$((errors + 1))
+    fi
+  done
+
+  # Check skill count
+  local skills_dir="${OUTPUT_DIR}/agent/skills"
+  if [ -d "$skills_dir" ]; then
+    local skill_count=0
+    for d in "$skills_dir"/*/; do
+      if [ -d "$d" ]; then
+        skill_count=$((skill_count + 1))
+      fi
+    done
+    success "  Skills: ${skill_count} skill directories"
+  fi
+
+  # Check dist JS file count
+  local dist_dir="${OUTPUT_DIR}/dist"
+  if [ -d "$dist_dir" ]; then
+    local js_count
+    js_count=$(find "$dist_dir" -name '*.js' | wc -l)
+    success "  Compiled JS: ${js_count} files in dist/"
+  fi
+
+  # Verify no .ts files leaked (excluding node_modules)
+  local ts_count
+  ts_count=$(find "${OUTPUT_DIR}" -name '*.ts' -not -path '*/node_modules/*' 2>/dev/null | wc -l)
+  if [ "$ts_count" -gt 0 ]; then
+    warn "  ${ts_count} .ts source files found in package (expected 0)"
+  else
+    success "  No .ts source files leaked into package"
+  fi
+
+  echo ""
+  if [ "$errors" -eq 0 ]; then
+    success "Standalone package validation PASSED - all checks OK"
+  else
+    error "Standalone package validation FAILED - ${errors} error(s)"
+    exit 1
+  fi
+}
+
+# --- Main ---------------------------------------------------------
+main() {
+  echo ""
+  echo "══════════════════════════════════════════════════════════════════════"
+  echo "  devnull Standalone Package Builder"
+  echo "  Project: ${PROJECT_DIR}"
+  echo "══════════════════════════════════════════════════════════════════════"
+  echo ""
+
+  step_build
+  echo ""
+  step_deps
+  echo ""
+  step_create_output
+  echo ""
+  step_copy
+  echo ""
+  step_readme
+  echo ""
+  step_tarball
+  echo ""
+  step_validate
+
+  echo ""
+  echo "══════════════════════════════════════════════════════════════════════"
+  echo "  Package Summary"
+  echo "══════════════════════════════════════════════════════════════════════"
+  echo ""
+  echo "  Directory: ${OUTPUT_DIR}"
+  if [ "$CREATE_TARBALL" = true ]; then
+    echo "  Tarball:   ${PROJECT_DIR}/devnull-standalone.tar.gz"
+  fi
+  echo ""
+  echo "  Quick start:"
+  echo "    cd ${OUTPUT_DIR}"
+  echo "    cp .env.example .env"
+  echo "    # Edit .env and add your DEEPSEEK_API_KEY"
+  echo "    ./devnull-server.sh"
+  echo ""
+}
+
+# --- Execute -------------------------------------------------------
+main "$@"

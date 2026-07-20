@@ -74,8 +74,6 @@ LABEL \
 #   dcron — provides the `crontab` binary that schedule_task_tool shells out to
 #     (Alpine's busybox crond doesn't ship one by default).
 #   ca-certificates — required for HTTPS calls from the container.
-#   python3 / make / g++ — required by some native addons (e.g. better-sqlite3
-#     may need to rebuild if the prebuilt binary doesn't match the target arch).
 # ---------------------------------------------------------------------------
 # hadolint ignore=DL3018
 RUN apk add --no-cache \
@@ -83,19 +81,14 @@ RUN apk add --no-cache \
     ca-certificates \
     dcron \
     git \
-    openssh-client \
-    python3 \
-    make \
-    g++
+    openssh-client
 
 WORKDIR /opt/devnull
 
-# Install production Node dependencies
-# Use npm install instead of npm ci because package-lock.json may have
-# platform-specific optional deps (e.g. @emnapi/* for @rolldown) that differ
-# between the build host (Windows) and the Docker target (Linux).
-COPY package.json package-lock.json* ./
-RUN npm install --omit=dev && npm cache clean --force
+# Copy node_modules from builder stage (already pruned of devDependencies)
+# This avoids re-running npm install in the runtime stage, which would need
+# to compile native addons (better-sqlite3) from source on Alpine.
+COPY --from=builder /build/node_modules ./node_modules
 
 # Copy compiled output from builder
 COPY --from=builder /build/dist ./dist
@@ -124,23 +117,33 @@ ENV DEVNULL_HOME=/opt/devnull \
     NODE_ENV=production \
     DATABASE_TYPE=sqlite
 
+# ---------------------------------------------------------------------------
+# Create non-root user and set up data directory
+# ---------------------------------------------------------------------------
+RUN addgroup -S devnull \
+    && adduser -S devnull -G devnull \
+    && mkdir -p /data \
+    && chown -R devnull:devnull /opt/devnull /data
+
+USER devnull
+
+# ---------------------------------------------------------------------------
+# Volumes
+#   /workspace — mount your project as the workspace devnull operates on
+#   /data      — persistent SQLite database volume
+# ---------------------------------------------------------------------------
+VOLUME ["/workspace", "/data"]
+
 EXPOSE 3001
 
 # ---------------------------------------------------------------------------
-# Healthcheck for API server mode
+# Healthcheck — verify the API server is responding
 # ---------------------------------------------------------------------------
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD node -e "require('http').get('http://localhost:3001/api/v1/health', r => {process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"
 
 # ---------------------------------------------------------------------------
-# Non-root user
+# Default command — show help when no arguments are provided
 # ---------------------------------------------------------------------------
-RUN addgroup -S devnull && adduser -S devnull -G devnull \
-    && mkdir -p /workspace/.log /workspace/.devnull/data \
-    && chown -R devnull:devnull /workspace /opt/devnull
-
-USER devnull
-WORKDIR /workspace
-
 ENTRYPOINT ["node", "/opt/devnull/dist/cli/index.js"]
 CMD ["--help"]

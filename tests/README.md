@@ -52,5 +52,5 @@ npx vitest run tests/unit/contextCompaction.test.ts --config tests/vitest.config
 npx vitest run tests/integration/ --config tests/vitest.config.ts
 
 # Run all tests
-bash tests/run-all.sh
+bash bash tests/run-all.sh
 ```

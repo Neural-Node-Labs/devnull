@@ -1,4 +1,6 @@
 import Database from "better-sqlite3";
+import fs from "node:fs";
+import path from "node:path";
 import type { DatabaseClient, QueryResult } from "./types.js";
 
 /**
@@ -86,6 +88,10 @@ export class SqliteClient implements DatabaseClient {
   async init(): Promise<void> {
     if (this._initialized) return;
     try {
+      // Ensure the parent directory exists before opening the database
+      const dbDir = path.dirname(this.dbPath);
+      fs.mkdirSync(dbDir, { recursive: true });
+
       this.db = new Database(this.dbPath);
       // Enable WAL mode for better concurrent read performance
       this.db.pragma("journal_mode = WAL");

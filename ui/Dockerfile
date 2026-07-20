@@ -8,7 +8,9 @@ ARG NGINX_IMAGE=nginx:alpine
 ARG VERSION=0.2.0
 ARG BUILD_DATE
 
-# ─── Stage 1: Build ──────────────────────────────────────────────────────────
+# =============================================================================
+# Stage 1: Build the React SPA with Vite
+# =============================================================================
 FROM ${NODE_IMAGE} AS builder
 
 LABEL \
@@ -30,7 +32,9 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
-# ─── Stage 2: Serve with nginx ──────────────────────────────────────────────
+# =============================================================================
+# Stage 2: Serve with nginx
+# =============================================================================
 FROM ${NGINX_IMAGE}
 
 LABEL \
@@ -40,8 +44,12 @@ LABEL \
     org.opencontainers.image.version="${VERSION}" \
     org.opencontainers.image.created="${BUILD_DATE}" \
     org.opencontainers.image.authors="Sir John M. Nueva" \
-    org.opencontainers.image.licenses="LicenseRef-Proprietary"
+    org.opencontainers.image.licenses="LicenseRef-Proprietary" \
     org.opencontainers.image.base.name="${NGINX_IMAGE}"
+
+# Install wget for healthcheck (used by docker-compose.yml)
+# hadolint ignore=DL3018
+RUN apk add --no-cache wget
 
 # Copy built assets from builder
 COPY --from=builder /build/dist /usr/share/nginx/html
@@ -52,5 +60,8 @@ COPY nginx.conf /etc/nginx/conf.d/default.conf
 # Non-root user (nginx already runs as nginx user)
 EXPOSE 80
 
-CMD ["nginx", "-g", "daemon off;"]
+# Healthcheck for the nginx server
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:80/ || exit 1
 
+CMD ["nginx", "-g", "daemon off;"]

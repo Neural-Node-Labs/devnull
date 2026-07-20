@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 const HISTORY_PATH = path.join(".agent", "task-history.jsonl");
-const MARKDOWN_PATH = path.join("tasks", "task_history.md");
+const MARKDOWN_PATH = path.join(".agent", "task_history.md");
 const MAX_ENTRIES = 200; // cap file growth; oldest entries drop off on append past this
 const MAX_MARKDOWN_ENTRIES = 50;
 
@@ -41,7 +41,7 @@ export function appendTaskHistory(
   const updated = [...existing, full].slice(-MAX_ENTRIES);
   fs.writeFileSync(jsonlPath, updated.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf-8");
 
-  // --- Write to tasks/task_history.md ---
+  // --- Write to .agent/task_history.md ---
   const mdPath = path.join(cwd, MARKDOWN_PATH);
   fs.mkdirSync(path.dirname(mdPath), { recursive: true });
 
@@ -111,7 +111,7 @@ export function readTaskHistory(cwd: string, limit = 5): TaskHistoryEntry[] {
     return entries.slice(-limit).reverse();
   }
 
-  // Fallback: read from tasks/task_history.md
+  // Fallback: read from .agent/task_history.md
   const mdPath = path.join(cwd, MARKDOWN_PATH);
   if (!fs.existsSync(mdPath)) return [];
 

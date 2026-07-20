@@ -65,7 +65,7 @@ DEVNULL_API_PORT=8080 ./scripts/devnull-server.sh
 
 ```bash
 # Health check:
-curl http://localhost:3001/api/v1/health
+curl http://localhost:8080/api/v1/health
 
 # Expected response:
 # {"success":true,"data":{"status":"ok","version":"0.2.0","uptime":...}}
@@ -192,4 +192,4 @@ bash scripts/package-standalone.sh
 
 ## License
 
-MIT
+LicenseRef-Proprietary

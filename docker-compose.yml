@@ -5,8 +5,7 @@
 #   docker compose up -d --build
 #
 # PostgreSQL mode (opt-in):
-#   DATABASE_TYPE=postgres DATABASE_URL=postgresql://devnull:devnull_pass@postgres:5432/devnull \
-#     docker compose --profile postgres up -d --build
+#   docker compose --profile postgres up -d --build
 #
 # With UI (optional):
 #   docker compose --profile ui up -d --build
@@ -14,6 +13,9 @@
 # Profiles:
 #   postgres  — starts a PostgreSQL container alongside the API
 #   ui        — starts the React SPA served by nginx
+#
+# Networks:
+#   devnull-net — internal bridge network for inter-service communication
 # =============================================================================
 
 services:
@@ -58,6 +60,10 @@ services:
       - devnull-data:/data
     working_dir: /workspace
     restart: unless-stopped
+
+    # ─── Networking ───────────────────────────────────────────────────────
+    networks:
+      - devnull-net
 
     # ─── Resource limits ──────────────────────────────────────────────────
     deploy:
@@ -116,6 +122,11 @@ services:
       retries: 5
       start_period: 10s
     restart: unless-stopped
+
+    # ─── Networking ───────────────────────────────────────────────────────
+    networks:
+      - devnull-net
+
     deploy:
       resources:
         limits:
@@ -143,6 +154,11 @@ services:
       api:
         condition: service_healthy
     restart: unless-stopped
+
+    # ─── Networking ───────────────────────────────────────────────────────
+    networks:
+      - devnull-net
+
     deploy:
       resources:
         limits:
@@ -158,8 +174,20 @@ services:
       retries: 3
       start_period: 5s
 
+# ─── Networks ────────────────────────────────────────────────────────────────
+networks:
+  devnull-net:
+    name: devnull-network
+    driver: bridge
+    # Internal: false allows containers to reach the internet (for LLM API calls)
+    # Set to true if you want to isolate the stack from the host network.
+    internal: false
+
+# ─── Volumes ─────────────────────────────────────────────────────────────────
 volumes:
   devnull-data:
+    name: devnull-sqlite-data
     driver: local
   pgdata:
+    name: devnull-pgdata
     driver: local
