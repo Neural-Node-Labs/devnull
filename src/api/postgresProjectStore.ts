@@ -1,48 +1,36 @@
-import pg from "pg";
-import crypto from "node:crypto";
+import type { DatabaseClient } from "../db/types.js";
+import { createConnection } from "../db/connection.js";
 import { StoredProject } from "./projectStore.js";
 
-const { Pool } = pg;
-
 /**
- * PostgreSQL-backed project store.
- * Stores project information in a PostgreSQL table instead of a JSON file.
+ * Database-backed project store.
+ * Stores project information in a database table instead of a JSON file.
  * Falls back gracefully if the database is unreachable.
+ *
+ * Accepts a DatabaseClient (SQLite or PostgreSQL) instead of creating its own connection.
  */
 export class PostgresProjectStore {
-  private pool: pg.Pool;
-  private initialized = false;
+  private db: DatabaseClient;
 
-  constructor(connectionString?: string) {
-    this.pool = new Pool({
-      connectionString: connectionString || process.env.DATABASE_URL,
-      max: 5,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 5000,
-    });
+  constructor(db?: DatabaseClient) {
+    this.db = db ?? createConnection();
   }
 
   async init(): Promise<void> {
-    if (this.initialized) return;
+    if (this.db.initialized) return;
     try {
-      const client = await this.pool.connect();
-      try {
-        await client.query(`
-          CREATE TABLE IF NOT EXISTS projects (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            path TEXT NOT NULL,
-            active BOOLEAN DEFAULT FALSE,
-            include_in_llm BOOLEAN DEFAULT FALSE,
-            created_at TEXT NOT NULL
-          );
+      await this.db.query(`
+        CREATE TABLE IF NOT EXISTS projects (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          path TEXT NOT NULL,
+          active INTEGER DEFAULT 0,
+          include_in_llm INTEGER DEFAULT 0,
+          created_at TEXT NOT NULL
+        );
 
-          CREATE INDEX IF NOT EXISTS idx_projects_active ON projects(active);
-        `);
-        this.initialized = true;
-      } finally {
-        client.release();
-      }
+        CREATE INDEX IF NOT EXISTS idx_projects_active ON projects(active);
+      `);
     } catch (err) {
       console.warn("[PostgresProjectStore] Failed to initialize:", err instanceof Error ? err.message : String(err));
     }
@@ -50,8 +38,8 @@ export class PostgresProjectStore {
 
   async list(): Promise<StoredProject[]> {
     try {
-      if (!this.initialized) await this.init();
-      const result = await this.pool.query(
+      if (!this.db.initialized) await this.init();
+      const result = await this.db.query<StoredProject>(
         `SELECT id, name, path, active, include_in_llm as "includeInLlm", created_at as "createdAt"
          FROM projects ORDER BY created_at DESC`
       );
@@ -64,10 +52,10 @@ export class PostgresProjectStore {
 
   async get(id: string): Promise<StoredProject | undefined> {
     try {
-      if (!this.initialized) await this.init();
-      const result = await this.pool.query(
+      if (!this.db.initialized) await this.init();
+      const result = await this.db.query<StoredProject>(
         `SELECT id, name, path, active, include_in_llm as "includeInLlm", created_at as "createdAt"
-         FROM projects WHERE id = $1`,
+         FROM projects WHERE id = ?`,
         [id]
       );
       return result.rows[0] || undefined;
@@ -79,16 +67,16 @@ export class PostgresProjectStore {
 
   async add(project: StoredProject): Promise<void> {
     try {
-      if (!this.initialized) await this.init();
-      await this.pool.query(
+      if (!this.db.initialized) await this.init();
+      await this.db.query(
         `INSERT INTO projects (id, name, path, active, include_in_llm, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6)
+         VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET
            name = EXCLUDED.name,
            path = EXCLUDED.path,
            active = EXCLUDED.active,
            include_in_llm = EXCLUDED.include_in_llm`,
-        [project.id, project.name, project.path, project.active, project.includeInLlm, project.createdAt]
+        [project.id, project.name, project.path, project.active ? 1 : 0, project.includeInLlm ? 1 : 0, project.createdAt]
       );
     } catch (err) {
       console.warn("[PostgresProjectStore] Failed to add:", err instanceof Error ? err.message : String(err));
@@ -97,33 +85,32 @@ export class PostgresProjectStore {
 
   async update(id: string, updates: Partial<StoredProject>): Promise<void> {
     try {
-      if (!this.initialized) await this.init();
+      if (!this.db.initialized) await this.init();
       const sets: string[] = [];
       const params: unknown[] = [];
-      let paramIndex = 1;
 
       if (updates.name !== undefined) {
-        sets.push(`name = $${paramIndex++}`);
+        sets.push("name = ?");
         params.push(updates.name);
       }
       if (updates.active !== undefined) {
-        sets.push(`active = $${paramIndex++}`);
-        params.push(updates.active);
+        sets.push("active = ?");
+        params.push(updates.active ? 1 : 0);
       }
       if (updates.includeInLlm !== undefined) {
-        sets.push(`include_in_llm = $${paramIndex++}`);
-        params.push(updates.includeInLlm);
+        sets.push("include_in_llm = ?");
+        params.push(updates.includeInLlm ? 1 : 0);
       }
       if (updates.path !== undefined) {
-        sets.push(`path = $${paramIndex++}`);
+        sets.push("path = ?");
         params.push(updates.path);
       }
 
       if (sets.length === 0) return;
 
       params.push(id);
-      await this.pool.query(
-        `UPDATE projects SET ${sets.join(", ")} WHERE id = $${paramIndex}`,
+      await this.db.query(
+        `UPDATE projects SET ${sets.join(", ")} WHERE id = ?`,
         params
       );
     } catch (err) {
@@ -133,8 +120,8 @@ export class PostgresProjectStore {
 
   async delete(id: string): Promise<boolean> {
     try {
-      if (!this.initialized) await this.init();
-      const result = await this.pool.query("DELETE FROM projects WHERE id = $1", [id]);
+      if (!this.db.initialized) await this.init();
+      const result = await this.db.query("DELETE FROM projects WHERE id = ?", [id]);
       return (result.rowCount ?? 0) > 0;
     } catch (err) {
       console.warn("[PostgresProjectStore] Failed to delete:", err instanceof Error ? err.message : String(err));
@@ -144,7 +131,7 @@ export class PostgresProjectStore {
 
   async close(): Promise<void> {
     try {
-      await this.pool.end();
+      await this.db.close();
     } catch {
       // ignore close errors
     }

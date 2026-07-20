@@ -14,8 +14,9 @@ export interface ChatRequest {
   task: string;
   /** Optional: force plan mode on/off for this request. */
   planMode?: "auto" | "always" | "never";
-  /** Optional: collapse stale/superseded file-read snapshots in context. Default: false. */
-  leanToken?: boolean;
+  /** Optional: keep every historical copy of read_tool file snapshots in context instead of
+   *  collapsing stale ones (lean-token compaction is the default). Default: false. */
+  fullContextToken?: boolean;
   /** Optional: which project to run against. Defaults to the currently active project; falls
    *  back to the server's own cwd if no projects exist at all. */
   projectId?: string;
@@ -27,6 +28,16 @@ export interface ChatRequest {
   /** Optional: when true, the orchestrator auto-continues past the iteration limit instead of
    *  stopping. Used by the UI's "Continue" button when a limitation message is shown. */
   continueOnLimit?: boolean;
+  /** Optional: enable phase-based planning. When true, the task is divided into multiple phases
+   *  each with isolated ReAct memory to reduce token footprint. Default: false. */
+  phasePlanning?: boolean;
+  /**
+   * Optional: fully autonomous mode — automatically answers "yes" to ALL interactive prompts
+   * (plan approval, phase plan approval, iteration limit continuation, subagent continuation).
+   * The LLM drives end-to-end without any human intervention. Use this for CI/CD, automated
+   * testing, or any scenario where zero human input is desired. Default: false.
+   */
+  auto?: boolean;
 }
 
 /** POST /api/v1/chat response data. */
@@ -46,17 +57,61 @@ export interface ChatResponse {
    *  transport error so the UI can show *why* it stopped (iteration limit, validator exhausted,
    *  plan rejected, etc.) rather than just "something went wrong". */
   limitation?: string;
+  /** When true, the server is explicitly requesting user input to continue (e.g., iteration
+   *  limit reached). The UI should highlight the "Continue" button in red to draw attention. */
+  continueRequested?: boolean;
+  /** When true, the run stopped because the iteration limit was reached. The UI should
+   *  highlight the limitation message in red to distinguish it from other limitation types. */
+  iterationMaxReached?: boolean;
+  /**
+   * When present, a subagent hit its iteration limit and the preserved context is included
+   * so the UI can re-send it with continueOnLimit: true to resume the subagent without
+   * losing progress. Contains the subagent's last thought, tool calls, and observations.
+   */
+  subagentContext?: {
+    /** The subagent's last assistant message content before hitting the limit. */
+    lastThought: string;
+    /** Summary of tool calls made by the subagent. */
+    toolCalls: string[];
+    /** Key observations from the subagent's execution. */
+    observations: string[];
+    /** How many iterations the subagent completed before hitting the limit. */
+    iterationCount: number;
+  };
+  /**
+   * When present, the orchestrator hit the iteration limit and captured partial-success
+   * context — what was accomplished before stopping. Contains the last N tool calls,
+   * files modified, files read, commands run, and the last thought. The UI can surface
+   * this information to show the user what progress was made.
+   */
+  partialSuccess?: {
+    /** The last N tool calls made before the iteration limit was hit. */
+    toolCalls: { name: string; args: string; result: string }[];
+    /** Files that were modified during the run (write_edit_tool calls). */
+    filesModified: string[];
+    /** Files that were read during the run (read_tool calls). */
+    filesRead: string[];
+    /** Commands that were executed (run_command_tool calls). */
+    commandsRun: string[];
+    /** The last assistant thought before hitting the limit. */
+    lastThought: string;
+    /** How many iterations were completed before hitting the limit. */
+    iterationCount: number;
+    /** How many restarts occurred. */
+    restartCount: number;
+  };
 }
 
 /** POST /api/v1/chat/plan request body. */
 export interface PlanRequest {
   task: string;
   planMode?: "auto" | "always" | "never";
-  leanToken?: boolean;
+  fullContextToken?: boolean;
   projectId?: string;
   maxIterations?: number;
   isolatedWorkspace?: boolean;
   continueOnLimit?: boolean;
+  phasePlanning?: boolean;
 }
 
 /** POST /api/v1/chat/plan response data. */
@@ -77,6 +132,30 @@ export interface ExecuteResponse {
   result: string;
   iterations: number;
   limitation?: string;
+  continueRequested?: boolean;
+  iterationMaxReached?: boolean;
+  /**
+   * When present, the orchestrator hit the iteration limit and captured partial-success
+   * context — what was accomplished before stopping. Contains the last N tool calls,
+   * files modified, files read, commands run, and the last thought. The UI can surface
+   * this information to show the user what progress was made.
+   */
+  partialSuccess?: {
+    /** The last N tool calls made before the iteration limit was hit. */
+    toolCalls: { name: string; args: string; result: string }[];
+    /** Files that were modified during the run (write_edit_tool calls). */
+    filesModified: string[];
+    /** Files that were read during the run (read_tool calls). */
+    filesRead: string[];
+    /** Commands that were executed (run_command_tool calls). */
+    commandsRun: string[];
+    /** The last assistant thought before hitting the limit. */
+    lastThought: string;
+    /** How many iterations were completed before hitting the limit. */
+    iterationCount: number;
+    /** How many restarts occurred. */
+    restartCount: number;
+  };
 }
 
 /** GET /api/v1/health response data. */
@@ -141,5 +220,85 @@ export interface LoginResponse {
   token: string;
   username: string;
   role: "admin" | "user";
+}
+
+// ─── Phase Report Types ──────────────────────────────────────────────────
+
+/** A phase report entry returned by the API. */
+export interface PhaseReportEntry {
+  id: string;
+  taskId: string;
+  phaseNumber: number;
+  phaseTitle: string;
+  content: string;
+  tokens: number;
+  iterations: number;
+  createdAt: string;
+}
+
+/** GET /api/v1/phase-reports query params. */
+export interface PhaseReportsQuery {
+  taskId?: string;
+}
+
+/** GET /api/v1/phase-reports response data. */
+export interface PhaseReportsResponse {
+  reports: PhaseReportEntry[];
+}
+
+// ─── WBS Types ───────────────────────────────────────────────────────────
+
+/** A WBS entry returned by the API. */
+export interface WbsEntryResponse {
+  id: string;
+  taskId: string;
+  taskDescription: string;
+  phaseNumber: number;
+  phaseTitle: string;
+  status: "pending" | "in_progress" | "completed" | "failed" | "skipped";
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** GET /api/v1/wbs query params. */
+export interface WbsQuery {
+  taskId?: string;
+}
+
+/** GET /api/v1/wbs response data. */
+export interface WbsResponse {
+  entries: WbsEntryResponse[];
+}
+
+/** PUT /api/v1/wbs/:id/status request body. */
+export interface UpdateWbsStatusRequest {
+  status: "pending" | "in_progress" | "completed" | "failed" | "skipped";
+}
+
+// ─── Task History Types ────────────────────────────────────────────────────
+
+/** A task history entry returned by the API. */
+export interface TaskHistoryEntryResponse {
+  id: string;
+  task: string;
+  summary: string;
+  timestamp: string;
+  iterations: number;
+  totalTokens: number | null;
+}
+
+/** GET /api/v1/task-history query params. */
+export interface TaskHistoryQuery {
+  limit?: number;
+}
+
+/** GET /api/v1/task-history response data. */
+export interface TaskHistoryListResponse {
+  tasks: TaskHistoryEntryResponse[];
+}
+
+/** GET /api/v1/task-history/:id response data. */
+export interface TaskHistoryDetailResponse {
+  task: TaskHistoryEntryResponse;
 }
 

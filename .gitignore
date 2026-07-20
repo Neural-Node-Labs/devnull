@@ -10,3 +10,5 @@
 /ui/node_modules/
 ui/dist/
 
+/.log/
+/ARCHIVE/

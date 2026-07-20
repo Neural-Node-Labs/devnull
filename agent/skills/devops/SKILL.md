@@ -2,13 +2,12 @@
 name: devops
 role: DevOps Engineer
 description: >
-  Handles CI/CD pipelines, build/deploy automation, environment configuration, and release
-  process. Load whenever the task involves pipelines, deployment scripts, environment setup,
-  infra-as-code, or "how do we ship this".
-triggers: [ci/cd, pipeline, deploy, release, "build script", environment, "infra as code", terraform, "github actions"]
+  Owns the path from committed code to running system: build, test-gate, package, deploy,
+  rollback, and environment configuration.
+triggers: [deploy, pipeline, CI, CD, "CI/CD", release, rollback, staging, production, artifact]
 version: 1.0
 requires_tools: [read_tool, glob_tool, grep_tool, write_edit_tool, run_command_tool, ssh_tool, schedule_task_tool, github_tool, docker_deploy_ssh_tool]
-composes_with: [architect, kubernetes-expert, docker-expert, secops]
+composes_with: [docker-expert, kubernetes-expert, secops, performance-tester]
 ---
 
 ## Role
@@ -48,3 +47,9 @@ rollback, and environment configuration.
 - CI/CD pipeline config
 - Deployment scripts
 - artifact.md (deploy file list + rollback plan)
+- Deploy report (via docker_deploy_ssh_tool: pre-check results, rollback status, per-service health)
+
+## SSH Access
+- SSH access to the target environment is required for deploys and health checks.
+- Use the `ssh_tool` to run commands on the target environment, and `ssh_copy_tool` to copy files.
+- Use `docker_deploy_ssh_tool` to deploy Docker containers via SSH.

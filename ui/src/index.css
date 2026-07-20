@@ -113,6 +113,98 @@ input::placeholder, textarea::placeholder {
   opacity: 0.6;
 }
 
+/* ─── Continue / Limitation Styles ───────────────────────────────────────── */
+
+.devnull-limitation-banner {
+  background: color-mix(in srgb, var(--color-success) 20%, transparent) !important;
+  border: 2px solid var(--color-success) !important;
+  animation: devnull-pulse-border 2s ease-in-out infinite;
+}
+
+.devnull-continue-btn {
+  background: var(--color-success) !important;
+  color: #fff !important;
+  font-weight: 700 !important;
+  font-size: 13px !important;
+  padding: 8px 20px !important;
+  border-radius: 6px !important;
+  border: none !important;
+  cursor: pointer !important;
+  transition: transform 0.15s ease, box-shadow 0.15s ease !important;
+  box-shadow: 0 0 12px color-mix(in srgb, var(--color-success) 50%, transparent) !important;
+}
+
+.devnull-continue-btn:hover:not(:disabled) {
+  transform: scale(1.05);
+  box-shadow: 0 0 20px color-mix(in srgb, var(--color-success) 70%, transparent) !important;
+}
+
+.devnull-continue-btn:disabled {
+  background: var(--color-text-secondary) !important;
+  cursor: not-allowed !important;
+  box-shadow: none !important;
+}
+
+@keyframes devnull-pulse-border {
+  0%, 100% {
+    border-color: var(--color-success);
+  }
+  50% {
+    border-color: color-mix(in srgb, var(--color-success) 60%, transparent);
+  }
+}
+
+/* ─── Toast Notification ─────────────────────────────────────────────────── */
+
+.devnull-toast-container {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.devnull-toast {
+  pointer-events: auto;
+  padding: 12px 20px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  animation: devnull-toast-slide-in 0.3s ease-out;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.devnull-toast-success {
+  background: var(--color-success);
+}
+
+.devnull-toast-warning {
+  background: var(--color-warning);
+}
+
+.devnull-toast-error {
+  background: var(--color-error);
+}
+
+@keyframes devnull-toast-slide-in {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
 /* ─── Loading Spinner ────────────────────────────────────────────────────── */
 
 .devnull-spinner {

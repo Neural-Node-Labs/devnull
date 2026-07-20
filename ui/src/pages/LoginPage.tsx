@@ -1,14 +1,35 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import { api } from "../api/client";
 
 export function LoginPage() {
-  const { login, isAuthenticated } = useAuth();
+  const { login, register, isAuthenticated } = useAuth();
   const navigate = useNavigate();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [isRegisterMode, setIsRegisterMode] = useState(false);
+  const [checkingUsers, setCheckingUsers] = useState(true);
+
+  // Check if any users exist — if not, show registration form
+  useEffect(() => {
+    const checkUserCount = async () => {
+      try {
+        const res = await api.getUserCount();
+        if (res.success && res.data) {
+          setIsRegisterMode(res.data.count === 0);
+        }
+      } catch {
+        // If the endpoint fails, assume users exist (login mode)
+        setIsRegisterMode(false);
+      } finally {
+        setCheckingUsers(false);
+      }
+    };
+    checkUserCount();
+  }, []);
 
   // If already authenticated, redirect to home
   React.useEffect(() => {
@@ -26,9 +47,19 @@ export function LoginPage() {
       return;
     }
 
+    if (isRegisterMode && password.length < 4) {
+      setError("Password must be at least 4 characters");
+      return;
+    }
+
     setLoading(true);
     try {
-      const err = await login(username.trim(), password);
+      let err: string | null;
+      if (isRegisterMode) {
+        err = await register(username.trim(), password);
+      } else {
+        err = await login(username.trim(), password);
+      }
       if (err) {
         setError(err);
       } else {
@@ -40,6 +71,24 @@ export function LoginPage() {
       setLoading(false);
     }
   };
+
+  if (checkingUsers) {
+    return (
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "center",
+          minHeight: "100vh",
+          background: "var(--color-bg)",
+          color: "var(--color-text-secondary)",
+          fontFamily: "system-ui, sans-serif",
+        }}
+      >
+        Loading...
+      </div>
+    );
+  }
 
   return (
     <div
@@ -78,7 +127,9 @@ export function LoginPage() {
             fontSize: "14px",
           }}
         >
-          Sign in to access the dashboard
+          {isRegisterMode
+            ? "No users found. Register as the first admin user."
+            : "Sign in to access the dashboard"}
         </p>
 
         <form onSubmit={handleSubmit}>
@@ -135,8 +186,8 @@ export function LoginPage() {
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="Enter your password"
-              autoComplete="current-password"
+              placeholder={isRegisterMode ? "Choose a password (min 4 chars)" : "Enter your password"}
+              autoComplete={isRegisterMode ? "new-password" : "current-password"}
               style={{
                 width: "100%",
                 padding: "10px 12px",
@@ -182,11 +233,10 @@ export function LoginPage() {
               transition: "background 0.15s ease",
             }}
           >
-            {loading ? "Signing in..." : "Sign In"}
+            {loading ? "Please wait..." : isRegisterMode ? "Register & Sign In" : "Sign In"}
           </button>
         </form>
       </div>
     </div>
   );
 }
-

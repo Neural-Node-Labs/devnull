@@ -4,21 +4,9 @@ import crypto from "node:crypto";
 /**
  * Token-based authentication middleware for the devnull API.
  *
- * The system supports two modes:
- *
- * **Login mode (default):** When `ADMIN_USERNAME` and `ADMIN_PASSWORD` are set,
- *   clients must call `POST /api/v1/login` with those credentials to receive a
- *   Bearer token. That token is then used for all subsequent API calls.
- *
- * **Open-access mode (legacy):** If neither `ADMIN_USERNAME` nor `ADMIN_PASSWORD`
- *   is set, the API runs without authentication (for local development).
- *
- * The default admin credentials are created from environment variables:
- *   - `ADMIN_USERNAME` (default: "admin")
- *   - `ADMIN_PASSWORD` (default: "admin")
- *
- * On startup, a default admin user is created and a token is pre-generated
- * so the admin can immediately use the API.
+ * The system authenticates against a user store managed by routes.ts.
+ * When the user table is empty, the first user to register becomes an admin.
+ * There is no static admin password — all auth goes through the user store.
  */
 
 // ─── Token Store ────────────────────────────────────────────────────────────
@@ -31,15 +19,33 @@ interface TokenEntry {
 
 const tokenStore = new Map<string, TokenEntry>();
 
-// ─── Admin Credentials ──────────────────────────────────────────────────────
+// ─── User Store (injected by routes.ts) ─────────────────────────────────────
 
-const ADMIN_USERNAME = process.env.ADMIN_USERNAME?.trim() || "admin";
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD?.trim() || "admin";
+export interface StoredUser {
+  id: string;
+  username: string;
+  passwordHash: string;
+  role: "admin" | "user";
+  createdAt: string;
+}
 
-/** Whether the API is running in authenticated mode. */
-export const isAuthEnabled = (): boolean => {
-  return !!(process.env.ADMIN_PASSWORD?.trim());
-};
+let userStore: StoredUser[] = [];
+
+/**
+ * Set the user store reference. Called by routes.ts on startup.
+ */
+export function setUserStore(store: StoredUser[]): void {
+  userStore = store;
+}
+
+/**
+ * Get the current user store reference.
+ */
+export function getUserStore(): StoredUser[] {
+  return userStore;
+}
+
+// ─── Token Management ───────────────────────────────────────────────────────
 
 /**
  * Generate a new token for a user and store it.
@@ -82,25 +88,39 @@ export function getTokensForUser(username: string): string[] {
   return tokens;
 }
 
+// ─── Password Hashing ───────────────────────────────────────────────────────
+
 /**
- * Initialize the default admin user and generate a startup token.
- * Called once when the server starts.
+ * Hash a password using SHA-256 with a random salt.
+ * Returns "salt:hash" format.
  */
-export function initDefaultAdmin(): { username: string; token: string } {
-  const username = ADMIN_USERNAME;
-  const token = generateToken(username, "admin");
-  return { username, token };
+export function hashPassword(password: string): string {
+  const salt = crypto.randomBytes(16).toString("hex");
+  const hash = crypto.createHash("sha256").update(salt + password).digest("hex");
+  return `${salt}:${hash}`;
 }
 
 /**
- * Verify login credentials against the configured admin credentials.
- * Returns the username on success, null on failure.
+ * Verify a password against a stored hash.
  */
-export function verifyLogin(username: string, password: string): string | null {
-  if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
-    return ADMIN_USERNAME;
-  }
-  return null;
+export function verifyPassword(password: string, stored: string): boolean {
+  const [salt, hash] = stored.split(":");
+  if (!salt || !hash) return false;
+  const computed = crypto.createHash("sha256").update(salt + password).digest("hex");
+  return computed === hash;
+}
+
+// ─── Login Verification ─────────────────────────────────────────────────────
+
+/**
+ * Verify login credentials against the user store.
+ * Returns the user on success, null on failure.
+ */
+export function verifyLogin(username: string, password: string): StoredUser | null {
+  const user = userStore.find((u) => u.username === username);
+  if (!user) return null;
+  if (!verifyPassword(password, user.passwordHash)) return null;
+  return user;
 }
 
 // ─── Express Middleware ─────────────────────────────────────────────────────
@@ -108,23 +128,14 @@ export function verifyLogin(username: string, password: string): string | null {
 /**
  * Express middleware that validates the Authorization header.
  *
- * - If auth is disabled (no ADMIN_PASSWORD set), allows all requests.
- * - If auth is enabled, requires a valid Bearer token from the token store.
+ * Requires a valid Bearer token from the token store for all routes
+ * except /login and /register.
  */
 export function authMiddleware(req: Request, res: Response, next: NextFunction): void {
-  // Skip auth for the login endpoint itself
-  if (req.path === "/login" && req.method === "POST") {
-    next();
-    return;
-  }
-
-  // No auth configured — allow open access (dev mode).
-  if (!isAuthEnabled()) {
-    if (process.env.NODE_ENV !== "test") {
-      console.warn(
-        "[devnull API] WARNING: ADMIN_PASSWORD is not set. API is running without authentication."
-      );
-    }
+  // Skip auth for login and register endpoints
+  if ((req.path === "/login" && req.method === "POST") ||
+      (req.path === "/register" && req.method === "POST") ||
+      (req.path === "/users/count" && req.method === "GET")) {
     next();
     return;
   }

@@ -53,3 +53,4 @@ and local orchestration via docker-compose.
 - docker-compose.yml (if applicable)
 - .dockerignore
 - Build/run validation report
+- Deploy report (via docker_deploy_ssh_tool: pre-check results, rollback status, per-service health)

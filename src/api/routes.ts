@@ -7,12 +7,15 @@ import { DeepSeekClient } from "../llm/deepseekClient.js";
 import { FileTelemetry } from "../telemetry/logger.js";
 import { loadLlmConfig } from "../config/loadConfig.js";
 import { SkillRegistry } from "../core/skillRegistry.js";
-import { authMiddleware, verifyLogin, generateToken, revokeToken, isAuthEnabled } from "./auth.js";
+import { authMiddleware, verifyLogin, generateToken, revokeToken, setUserStore, getUserStore, hashPassword, StoredUser } from "./auth.js";
 import { registerProjectRoutes } from "./projectRoutes.js";
 import { registerPlanRoutes } from "./planRoutes.js";
 import { listProjects, getProject } from "./projectStore.js";
 import { hasStoredApiKey, setStoredApiKey, clearStoredApiKey, applyStoredApiKey } from "./llmKeyStore.js";
 import { readTaskHistory } from "../core/taskHistory.js";
+import { PhaseReportStore } from "./phaseReportStore.js";
+import { WbsStore } from "./wbsStore.js";
+import { TaskHistoryStore } from "./taskHistoryStore.js";
 import type {
   ApiResponse,
   ChatRequest,
@@ -30,6 +33,9 @@ import type {
   SkillListEntry,
   UpdateUserRequest,
   User,
+  TaskHistoryEntryResponse,
+  TaskHistoryListResponse,
+  TaskHistoryDetailResponse,
 } from "./types.js";
 
 const pkg = JSON.parse(
@@ -81,8 +87,8 @@ export function createRouter(): Router {
       return;
     }
 
-    const token = generateToken(verifiedUser, "admin");
-    const data: LoginResponse = { token, username: verifiedUser, role: "admin" };
+    const token = generateToken(verifiedUser.username, verifiedUser.role);
+    const data: LoginResponse = { token, username: verifiedUser.username, role: verifiedUser.role };
     const body: ApiResponse<LoginResponse> = { success: true, data };
     res.json(body);
   });
@@ -127,7 +133,7 @@ export function createRouter(): Router {
 
   // ─── Chat / Task Execution ─────────────────────────────────────────────
   router.post("/chat", async (req: Request, res: Response) => {
-    const { task, planMode, leanToken, projectId, maxIterations, isolatedWorkspace, continueOnLimit } = req.body as ChatRequest;
+    const { task, planMode, fullContextToken, projectId, maxIterations, isolatedWorkspace, continueOnLimit, phasePlanning } = req.body as ChatRequest;
 
     if (!task || typeof task !== "string" || task.trim().length === 0) {
       const body: ApiResponse = { success: false, error: "Missing or empty 'task' field" };
@@ -151,16 +157,32 @@ export function createRouter(): Router {
     // interactive "continue?" prompt, so silently looping is the wrong default here.
     // When continueOnLimit is true (UI's "Continue" button), the orchestrator auto-continues
     // past the iteration limit instead of stopping.
+    //
+    // When the iteration limit is hit and the caller declines to continue, the handler:
+    // 1. Calls extractPartialSuccessContext() to capture what was accomplished
+    // 2. Calls synthesizeReport() to generate a partial-completion summary
+    // 3. Returns false to stop the orchestrator
+    // The partial-success context is then retrieved via getPartialSuccess() and included
+    // in the API response alongside the limitation field.
     const opts: OrchestratorOptions = {
       cwd,
       interactive: false,
-      onIterationLimitReached: async () => false,
+      onIterationLimitReached: async (_taskDescription: string, _iterationsSoFar: number) => {
+        // When continueOnLimit is true, auto-continue without capturing partial context
+        if (continueOnLimit) return true;
+        // Return false to stop — the orchestrator will call synthesizeReport() internally
+        // and set lastOutcome to "partial_success". We'll retrieve the partial-success
+        // context from getPartialSuccess() after run() completes.
+        return false;
+      },
     };
     if (planMode) opts.planMode = planMode;
-    if (leanToken) opts.leanToken = true;
+    if (fullContextToken) opts.fullContextToken = true;
     if (maxIterations) opts.maxIterations = maxIterations;
     if (isolatedWorkspace) opts.isolatedWorkspace = true;
     if (continueOnLimit) opts.continueOnLimit = true;
+    // Map API's phasePlanning (true = enable) to orchestrator's singlePhase (false = enable)
+    if (phasePlanning === false) opts.singlePhase = true;
 
     const orchestrator = new ReActOrchestrator(llm, telemetry, opts);
 
@@ -182,11 +204,12 @@ export function createRouter(): Router {
           task: task.trim(),
           plan,
           planMode: planMode ?? "always",
-          leanToken: leanToken ?? false,
+          fullContextToken: fullContextToken ?? false,
           projectId,
           maxIterations,
           isolatedWorkspace: isolatedWorkspace ?? false,
           continueOnLimit: continueOnLimit ?? false,
+          phasePlanning: phasePlanning ?? false,
           createdAt: Date.now(),
         });
       }
@@ -203,9 +226,40 @@ export function createRouter(): Router {
       if (sessionId) data.sessionId = sessionId;
       if (outcome !== "completed") {
         data.limitation =
-          outcome === "iteration_limit"
+          outcome === "iteration_limit" || outcome === "partial_success"
             ? "The task did not finish within the iteration limit."
             : "The plan was not approved, so no changes were made.";
+        if (outcome === "iteration_limit" || outcome === "partial_success") {
+          data.iterationMaxReached = true;
+          data.continueRequested = true;
+        }
+      }
+      // Include partial-success context when the orchestrator captured it
+      const partialSuccess = orchestrator.getPartialSuccess();
+      if (partialSuccess) {
+        data.partialSuccess = partialSuccess;
+      }
+      // Include subagent limit context when a subagent hit its iteration limit
+      const subagentContext = orchestrator.getSubagentLimitContext();
+      if (subagentContext) {
+        data.subagentContext = subagentContext;
+      }
+      // Persist phase report to PostgreSQL when the iteration limit was hit during
+      // phase planning and we have partial-success context. This ensures the phase
+      // report store has a record of what was accomplished even when the task didn't
+      // complete normally. The store gracefully falls back if the DB is unreachable.
+      if (partialSuccess && phasePlanning !== false) {
+        const phaseReportStore = new PhaseReportStore();
+        await phaseReportStore.save({
+          taskId: crypto.randomUUID(),
+          phaseNumber: 1,
+          phaseTitle: "Partial Completion",
+          content: result,
+          tokens: orchestrator.getCumulativeUsage()?.totalTokens ?? 0,
+          iterations: partialSuccess.iterationCount,
+        }).catch(() => {
+          // PhaseReportStore already logs warnings on failure; no need to re-log
+        });
       }
       const body: ApiResponse<ChatResponse> = { success: true, data };
       res.json(body);
@@ -224,18 +278,19 @@ export function createRouter(): Router {
     task: string;
     plan: string;
     planMode: "auto" | "always" | "never";
-    leanToken: boolean;
+    fullContextToken: boolean;
     projectId?: string;
     maxIterations?: number;
     isolatedWorkspace: boolean;
     continueOnLimit?: boolean;
+    phasePlanning?: boolean;
     createdAt: number;
   }
   const planSessions = new Map<string, PlanSession>();
 
   // ─── Plan Generation (no execution) ────────────────────────────────────
   router.post("/chat/plan", async (req: Request, res: Response) => {
-    const { task, planMode, leanToken, projectId, maxIterations, isolatedWorkspace, continueOnLimit } = req.body as PlanRequest;
+    const { task, planMode, fullContextToken, projectId, maxIterations, isolatedWorkspace, continueOnLimit, phasePlanning } = req.body as PlanRequest;
 
     if (!task || typeof task !== "string" || task.trim().length === 0) {
       const body: ApiResponse = { success: false, error: "Missing or empty 'task' field" };
@@ -254,9 +309,11 @@ export function createRouter(): Router {
     const llm = new DeepSeekClient(llmConfig, telemetry);
 
     const opts: OrchestratorOptions = { cwd, planMode: planMode ?? "always" };
-    if (leanToken) opts.leanToken = true;
+    if (fullContextToken) opts.fullContextToken = true;
     if (maxIterations) opts.maxIterations = maxIterations;
     if (isolatedWorkspace) opts.isolatedWorkspace = true;
+    // Map API's phasePlanning (true = enable) to orchestrator's singlePhase (false = enable)
+    if (phasePlanning === false) opts.singlePhase = true;
     const orchestrator = new ReActOrchestrator(llm, telemetry, opts);
 
     try {
@@ -266,11 +323,12 @@ export function createRouter(): Router {
         task: task.trim(),
         plan,
         planMode: planMode ?? "always",
-        leanToken: leanToken ?? false,
+        fullContextToken: fullContextToken ?? false,
         projectId,
         maxIterations,
         isolatedWorkspace: isolatedWorkspace ?? false,
         continueOnLimit: continueOnLimit ?? false,
+        phasePlanning: phasePlanning ?? false,
         createdAt: Date.now(),
       });
 
@@ -319,12 +377,21 @@ export function createRouter(): Router {
       cwd,
       planMode: "never", // Plan already done
       interactive: false,
-      onIterationLimitReached: async () => false,
+      onIterationLimitReached: async (_taskDescription: string, _iterationsSoFar: number) => {
+        // When continueOnLimit is true, auto-continue without capturing partial context
+        if (session.continueOnLimit) return true;
+        // Return false to stop — the orchestrator will call synthesizeReport() internally
+        // and set lastOutcome to "partial_success". We'll retrieve the partial-success
+        // context from getPartialSuccess() after run() completes.
+        return false;
+      },
     };
-    if (session.leanToken) opts.leanToken = true;
+    if (session.fullContextToken) opts.fullContextToken = true;
     if (session.maxIterations) opts.maxIterations = session.maxIterations;
     if (session.isolatedWorkspace) opts.isolatedWorkspace = true;
     if (session.continueOnLimit) opts.continueOnLimit = true;
+    // Map API's phasePlanning (true = enable) to orchestrator's singlePhase (false = enable)
+    if (session.phasePlanning === false) opts.singlePhase = true;
     const orchestrator = new ReActOrchestrator(llm, telemetry, opts);
 
     try {
@@ -333,9 +400,18 @@ export function createRouter(): Router {
       const data: ExecuteResponse = { result, iterations: 0 };
       if (outcome !== "completed") {
         data.limitation =
-          outcome === "iteration_limit"
+          outcome === "iteration_limit" || outcome === "partial_success"
             ? "The task did not finish within the iteration limit."
             : "The plan was not approved, so no changes were made.";
+        if (outcome === "iteration_limit" || outcome === "partial_success") {
+          data.iterationMaxReached = true;
+          data.continueRequested = true;
+        }
+      }
+      // Include partial-success context when the orchestrator captured it
+      const partialSuccess = orchestrator.getPartialSuccess();
+      if (partialSuccess) {
+        data.partialSuccess = partialSuccess;
       }
       const body: ApiResponse<ExecuteResponse> = { success: true, data };
       res.json(body);
@@ -420,6 +496,53 @@ export function createRouter(): Router {
     res.json(body);
   });
 
+  // ─── POST /api/v1/task-history — manually add a task history entry ─────────────────────
+  router.post("/task-history", async (req: Request, res: Response) => {
+    const { task, summary, iterations, totalTokens } = req.body as {
+      task?: string;
+      summary?: string;
+      iterations?: number;
+      totalTokens?: number;
+    };
+
+    if (!task || typeof task !== "string" || task.trim().length === 0) {
+      const body: ApiResponse = { success: false, error: "Missing or empty 'task' field" };
+      res.status(400).json(body);
+      return;
+    }
+
+    if (!summary || typeof summary !== "string" || summary.trim().length === 0) {
+      const body: ApiResponse = { success: false, error: "Missing or empty 'summary' field" };
+      res.status(400).json(body);
+      return;
+    }
+
+    const { cwd } = resolveProjectCwd(req.body.projectId as string | undefined);
+
+    // Write to the markdown file
+    const { appendTaskHistory } = await import("../core/taskHistory.js");
+    const entry = appendTaskHistory(cwd, {
+      task: task.trim(),
+      summary: summary.trim(),
+      iterations: typeof iterations === "number" ? iterations : 0,
+      totalTokens: typeof totalTokens === "number" ? totalTokens : undefined,
+    });
+
+    // Also persist to PostgreSQL if available
+    const store = new TaskHistoryStore();
+    await store.save({
+      task: task.trim(),
+      summary: summary.trim(),
+      iterations: typeof iterations === "number" ? iterations : 0,
+      totalTokens: typeof totalTokens === "number" ? totalTokens : null,
+    }).catch(() => {
+      // TaskHistoryStore already logs warnings on failure; no need to re-log
+    });
+
+    const body: ApiResponse = { success: true, data: entry };
+    res.status(201).json(body);
+  });
+
   // ─── Task History Logs — get telemetry logs for a specific task ───────────────────────
   router.get("/task-history/:taskId/logs", async (req: Request, res: Response) => {
     const taskId = String(req.params.taskId);
@@ -436,6 +559,116 @@ export function createRouter(): Router {
       // Fallback: return empty — file-based telemetry doesn't have task-level indexing
       const body: ApiResponse = { success: true, data: { taskId, logs: [], note: "PostgreSQL telemetry not available. Enable DATABASE_URL for task-level log queries." } };
       res.json(body);
+    }
+  });
+
+  // ─── Phase Reports ──────────────────────────────────────────────────────
+  const phaseReportStore = new PhaseReportStore();
+
+  router.get("/phase-reports", async (req: Request, res: Response) => {
+    try {
+      const taskId = req.query.taskId as string | undefined;
+      if (!taskId) {
+        const body: ApiResponse = { success: false, error: "Missing required query param 'taskId'" };
+        res.status(400).json(body);
+        return;
+      }
+      const reports = await phaseReportStore.listByTask(taskId);
+      const body: ApiResponse = { success: true, data: { reports } };
+      res.json(body);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      const body: ApiResponse = { success: false, error: message };
+      res.status(500).json(body);
+    }
+  });
+
+  router.get("/phase-reports/:id", async (req: Request, res: Response) => {
+    try {
+      const id = String(req.params.id);
+      const report = await phaseReportStore.get(id);
+      if (!report) {
+        const body: ApiResponse = { success: false, error: "Phase report not found" };
+        res.status(404).json(body);
+        return;
+      }
+      const body: ApiResponse = { success: true, data: report };
+      res.json(body);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      const body: ApiResponse = { success: false, error: message };
+      res.status(500).json(body);
+    }
+  });
+
+  // ─── WBS (Work Breakdown Structure) ─────────────────────────────────────
+  const wbsStore = new WbsStore();
+
+  router.get("/wbs", async (req: Request, res: Response) => {
+    try {
+      const taskId = req.query.taskId as string | undefined;
+      if (!taskId) {
+        const body: ApiResponse = { success: false, error: "Missing required query param 'taskId'" };
+        res.status(400).json(body);
+        return;
+      }
+      const entries = await wbsStore.listByTask(taskId);
+      const body: ApiResponse = { success: true, data: { entries } };
+      res.json(body);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      const body: ApiResponse = { success: false, error: message };
+      res.status(500).json(body);
+    }
+  });
+
+  router.put("/wbs/:id/status", async (req: Request, res: Response) => {
+    try {
+      const id = String(req.params.id);
+      const { status } = req.body as { status: string };
+
+      if (!status || typeof status !== "string") {
+        const body: ApiResponse = { success: false, error: "Missing or invalid 'status' field" };
+        res.status(400).json(body);
+        return;
+      }
+
+      const validStatuses = ["pending", "in_progress", "completed", "failed", "skipped"];
+      if (!validStatuses.includes(status)) {
+        const body: ApiResponse = {
+          success: false,
+          error: `Invalid status '${status}'. Allowed: ${validStatuses.join(", ")}`,
+        };
+        res.status(400).json(body);
+        return;
+      }
+
+      // Look up the WBS entry by ID to get taskId and phaseNumber
+      const entry = await wbsStore.get(id);
+      if (!entry) {
+        const body: ApiResponse = { success: false, error: "WBS entry not found" };
+        res.status(404).json(body);
+        return;
+      }
+
+      const updated = await wbsStore.updateStatus(
+        entry.taskId,
+        entry.phaseNumber,
+        status as "pending" | "in_progress" | "completed" | "failed" | "skipped"
+      );
+
+      if (!updated) {
+        const body: ApiResponse = { success: false, error: "Failed to update WBS entry status" };
+        res.status(500).json(body);
+        return;
+      }
+
+      const body: ApiResponse = { success: true, data: { id, status } };
+      res.json(body);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      const body: ApiResponse = { success: false, error: message };
+      res.status(500).json(body);
     }
   });
 
@@ -463,21 +696,71 @@ export function createRouter(): Router {
   });
 
   // ─── User Management ───────────────────────────────────────────────────
-  // In-memory user store (for demo/testing purposes)
-  const users: User[] = [
-    {
-      id: "1",
-      username: "admin",
+  // Persistent user store with password hashing (in-memory for now, but structured for DB migration)
+  const storedUsers: StoredUser[] = [];
+  let nextUserId = 1;
+
+  // Initialize the auth module's reference to our user store
+  setUserStore(storedUsers);
+
+  // ─── Register (no auth required — only works when no users exist) ──────
+  router.post("/register", (req: Request, res: Response) => {
+    const { username, password } = req.body as CreateUserRequest;
+
+    // Validate inputs first (before checking user count, so validation errors return 400 not 403)
+    if (!username || typeof username !== "string" || username.trim().length === 0) {
+      const body: ApiResponse = { success: false, error: "Missing or empty 'username' field" };
+      res.status(400).json(body);
+      return;
+    }
+
+    if (!password || typeof password !== "string" || password.trim().length === 0) {
+      const body: ApiResponse = { success: false, error: "Missing or empty 'password' field" };
+      res.status(400).json(body);
+      return;
+    }
+
+    if (password.length < 4) {
+      const body: ApiResponse = { success: false, error: "Password must be at least 4 characters" };
+      res.status(400).json(body);
+      return;
+    }
+
+    // Only allow registration when no users exist
+    if (storedUsers.length > 0) {
+      const body: ApiResponse = { success: false, error: "Registration is closed. Users can only be added by an admin." };
+      res.status(403).json(body);
+      return;
+    }
+
+    // First user becomes admin
+    const newUser: StoredUser = {
+      id: String(nextUserId++),
+      username: username.trim(),
+      passwordHash: hashPassword(password),
       role: "admin",
       createdAt: new Date().toISOString(),
-    },
-  ];
-  let nextUserId = 2;
+    };
+
+    storedUsers.push(newUser);
+
+    // Auto-login after registration
+    const token = generateToken(newUser.username, newUser.role);
+    const data: LoginResponse = { token, username: newUser.username, role: newUser.role };
+    const body: ApiResponse<LoginResponse> = { success: true, data };
+    res.status(201).json(body);
+  });
+
+  // ─── User count (no auth required — used by UI to check if registration is needed) ──
+  router.get("/users/count", (_req: Request, res: Response) => {
+    const body: ApiResponse<{ count: number }> = { success: true, data: { count: storedUsers.length } };
+    res.json(body);
+  });
 
   // List all users
   router.get("/users", (_req: Request, res: Response) => {
-    // Return users without passwords
-    const safeUsers = users.map(({ id, username, role, createdAt }) => ({
+    // Return users without password hashes
+    const safeUsers: User[] = storedUsers.map(({ id, username, role, createdAt }) => ({
       id,
       username,
       role,
@@ -487,7 +770,7 @@ export function createRouter(): Router {
     res.json(body);
   });
 
-  // Create a new user
+  // Create a new user (admin only — protected by authMiddleware)
   router.post("/users", (req: Request, res: Response) => {
     const { username, password, role } = req.body as CreateUserRequest;
 
@@ -504,22 +787,29 @@ export function createRouter(): Router {
     }
 
     // Check for duplicate username
-    if (users.some((u) => u.username === username.trim())) {
+    if (storedUsers.some((u) => u.username === username.trim())) {
       const body: ApiResponse = { success: false, error: "Username already exists" };
       res.status(409).json(body);
       return;
     }
 
-    const newUser: User = {
+    const newUser: StoredUser = {
       id: String(nextUserId++),
       username: username.trim(),
+      passwordHash: hashPassword(password),
       role: role === "admin" ? "admin" : "user",
       createdAt: new Date().toISOString(),
     };
 
-    users.push(newUser);
+    storedUsers.push(newUser);
 
-    const body: ApiResponse<User> = { success: true, data: newUser };
+    const safeUser: User = {
+      id: newUser.id,
+      username: newUser.username,
+      role: newUser.role,
+      createdAt: newUser.createdAt,
+    };
+    const body: ApiResponse<User> = { success: true, data: safeUser };
     res.status(201).json(body);
   });
 
@@ -527,7 +817,7 @@ export function createRouter(): Router {
   router.put("/users/:id", (req: Request, res: Response) => {
     const { id } = req.params;
     const updates = req.body as UpdateUserRequest;
-    const user = users.find((u) => u.id === id);
+    const user = storedUsers.find((u) => u.id === id);
 
     if (!user) {
       const body: ApiResponse = { success: false, error: "User not found" };
@@ -552,7 +842,7 @@ export function createRouter(): Router {
   // Delete a user
   router.delete("/users/:id", (req: Request, res: Response) => {
     const { id } = req.params;
-    const index = users.findIndex((u) => u.id === id);
+    const index = storedUsers.findIndex((u) => u.id === id);
 
     if (index === -1) {
       const body: ApiResponse = { success: false, error: "User not found" };
@@ -561,13 +851,13 @@ export function createRouter(): Router {
     }
 
     // Prevent deleting the last admin
-    if (users[index].role === "admin" && users.filter((u) => u.role === "admin").length <= 1) {
+    if (storedUsers[index].role === "admin" && storedUsers.filter((u) => u.role === "admin").length <= 1) {
       const body: ApiResponse = { success: false, error: "Cannot delete the last admin user" };
       res.status(403).json(body);
       return;
     }
 
-    const deleted = users.splice(index, 1)[0];
+    const deleted = storedUsers.splice(index, 1)[0];
     const body: ApiResponse<User> = {
       success: true,
       data: { id: deleted.id, username: deleted.username, role: deleted.role, createdAt: deleted.createdAt },

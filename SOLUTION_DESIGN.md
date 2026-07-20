@@ -166,7 +166,7 @@ by `ToolDispatcher`.
 | `playwright_run_tool` | `src/tools/playwrightTool.ts` | Run a Playwright spec via `npx playwright test`, returns pass/fail summary |
 | `crawl_and_generate_playwright_test_tool` | `src/tools/crawlPlaywrightTool.ts` | Fetch a URL, extract links/buttons/forms, write a Playwright test skeleton |
 | `github_tool` | `src/tools/githubTool.ts` | clone/fetch/pull/status/commit/push, using `GITHUB_TOKEN` for HTTPS auth |
-| `docker_deploy_ssh_tool` | `src/tools/dockerDeploySshTool.ts` | Tar the workspace, ship it over SSH, run a Docker command remotely |
+| `docker_deploy_ssh_tool` | `src/tools/dockerDeploySshTool.ts` | Enhanced remote Docker deploy: pre-deploy validation (docker version, disk space), rollback snapshot/restore, health verification (polls until all services healthy), compose file selection, registry pull mode, env file shipping, detailed deploy report with per-service status |
 | `subagent_tool` | `src/tools/subagentTool.ts` | Delegate a focused task to a fresh, isolated sub-orchestrator; only its final summary returns |
 
 Tool schema names use `snake_case` with a `_tool` suffix to match OpenAI/DeepSeek function-
@@ -342,35 +342,32 @@ devnull exposes an HTTP API for programmatic access, enabling a future React/Typ
 
 ### 14.2 Authentication
 
-The API uses a **login-based token authentication** system:
+The API uses a **token-based authentication** system with **first-user registration**:
 
-1. **Login mode (default):** When `ADMIN_PASSWORD` is set, clients must call
-   `POST /api/v1/login` with the admin credentials to receive a Bearer token.
-   That token is then used for all subsequent API calls via the
-   `Authorization: Bearer <token>` header.
+1. **No static admin credentials.** The old `ADMIN_USERNAME`/`ADMIN_PASSWORD` env vars
+   have been removed. All authentication goes through the user store.
 
-2. **Open-access mode (legacy):** If `ADMIN_PASSWORD` is not set, the API runs
-   **without authentication** and logs a warning — this allows local development
-   without configuration.
+2. **First-user registration.** When the user table is empty (fresh install), the
+   `POST /api/v1/register` endpoint is available. The first user to register becomes
+   an admin automatically.
 
-The default admin credentials are configured via environment variables:
-- `ADMIN_USERNAME` (default: "admin")
-- `ADMIN_PASSWORD` (default: "admin" — only used if explicitly set)
+3. **Login.** Once users exist, `POST /api/v1/login` authenticates against the stored
+   password hashes and returns a Bearer token.
 
-On startup, a default admin user is created and a token is pre-generated so the
-admin can immediately use the API after login.
+4. **Token-based auth.** All subsequent API calls require an `Authorization: Bearer <token>`
+   header. The `/health` endpoint is intentionally unauthenticated for Docker healthchecks.
 
 ```
-POST /api/v1/login  {"username": "admin", "password": "..."}  →  {"token": "..."}
-GET /api/v1/health  Authorization: Bearer <token>              →  200 OK
+POST /api/v1/register  {"username": "admin", "password": "..."}  →  {"token": "..."}
+POST /api/v1/login     {"username": "admin", "password": "..."}  →  {"token": "..."}
+GET /api/v1/health     (no auth required)                        →  200 OK
+GET /api/v1/skills     Authorization: Bearer <token>             →  200 OK
 ```
 
 ### 14.3 Configuration
 
 | Env Variable | Default | Description |
 |---|---|---|
-| `ADMIN_USERNAME` | `admin` | Admin username for login-based auth |
-| `ADMIN_PASSWORD` | (unset) | Admin password. If set, API requires login; if unset, API runs open-access |
 | `DEVNULL_API_PORT` | `3001` | Port the API server listens on |
 | `DEVNULL_API_HOST` | `0.0.0.0` | Host the API server binds to |
 

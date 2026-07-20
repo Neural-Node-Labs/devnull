@@ -6,60 +6,52 @@ const API_BASE = "http://localhost:3001";
  * Build headers with optional Bearer auth token.
  *
  * The token is resolved once per worker via `resolveApiToken()`:
- *   1. If ADMIN_PASSWORD is set in the test runner's environment, login to get a token.
- *   2. Otherwise, probe the API health endpoint without auth.
- *      - If it returns 200, no auth is needed.
- *      - If it returns 401, the API requires auth but we have no credentials —
- *        subsequent tests will fail with a clear error message.
- *
- * This makes the test suite resilient to both auth-enabled and auth-disabled
- * API deployments without requiring the test runner to have the env var set.
+ *   1. Try to register the first user (works when no users exist).
+ *   2. If registration fails (users already exist), try login.
+ *   3. If both fail, run without auth (tests will fail with clear error).
  */
 let resolvedToken: string | null | undefined = undefined;
 
 async function resolveApiToken(): Promise<string | null> {
   if (resolvedToken !== undefined) return resolvedToken;
 
-  // 1. Check env var and login if set
-  const adminPassword = process.env.ADMIN_PASSWORD?.trim();
-  if (adminPassword) {
-    try {
-      const response = await fetch(`${API_BASE}/api/v1/login`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: "admin", password: adminPassword }),
-      });
-      if (response.ok) {
-        const body = await response.json();
-        if (body.success && body.data?.token) {
-          resolvedToken = body.data.token;
-          return resolvedToken;
-        }
-      }
-    } catch {
-      // Network error — will be caught by individual tests
-    }
-  }
-
-  // 2. Probe without auth
+  // 1. Try to register the first user
   try {
-    const http = await import("node:http");
-    const status = await new Promise<number>((resolve, reject) => {
-      const req = http.get(`${API_BASE}/api/v1/health`, (res) => {
-        resolve(res.statusCode ?? 0);
-      });
-      req.on("error", reject);
-      req.end();
+    const response = await fetch(`${API_BASE}/api/v1/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "testadmin", password: "TestPass123!" }),
     });
-    if (status === 200) {
-      resolvedToken = null; // No auth required
-      return resolvedToken;
+    if (response.ok) {
+      const body = await response.json();
+      if (body.success && body.data?.token) {
+        resolvedToken = body.data.token;
+        return resolvedToken;
+      }
     }
   } catch {
     // Network error — will be caught by individual tests
   }
 
-  // 3. API requires auth but no credentials available
+  // 2. Try login (users already exist)
+  try {
+    const response = await fetch(`${API_BASE}/api/v1/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "testadmin", password: "TestPass123!" }),
+    });
+    if (response.ok) {
+      const body = await response.json();
+      if (body.success && body.data?.token) {
+        resolvedToken = body.data.token;
+        return resolvedToken;
+      }
+    }
+  } catch {
+    // Network error — will be caught by individual tests
+  }
+
+  // 3. No auth available
   resolvedToken = null;
   return resolvedToken;
 }
@@ -166,4 +158,3 @@ test.describe("API Health & Skills", () => {
     expect(body.error).toBe("Not found");
   });
 });
-

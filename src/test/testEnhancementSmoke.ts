@@ -11,6 +11,9 @@ import { PostgresTaskHistory } from "../core/postgresTaskHistory.js";
 import { PostgresProjectStore } from "../api/postgresProjectStore.js";
 import { PlanStore } from "../api/planStore.js";
 import { TOOL_SCHEMAS } from "../tools/toolSchemas.js";
+import { createConnection } from "../db/connection.js";
+import { loadDatabaseConfig } from "../db/config.js";
+import type { DatabaseConfig } from "../db/config.js";
 
 let passed = 0;
 let failed = 0;
@@ -66,7 +69,8 @@ async function main() {
   // ─── 2. PostgresTelemetry graceful fallback ─────────────────────────────
   console.log("\n--- PostgresTelemetry Graceful Fallback ---");
   {
-    const pgTelemetry = new PostgresTelemetry("postgresql://localhost:5432/nonexistent_test_db");
+    const pgConfig: DatabaseConfig = { ...loadDatabaseConfig(), type: "postgres", postgresUrl: "postgresql://localhost:5432/nonexistent_test_db" };
+    const pgTelemetry = new PostgresTelemetry(createConnection(pgConfig));
     // These should not throw — they catch errors and log warnings
     await pgTelemetry.logThought({ iteration: 1, phase: "search", thought: "test thought" });
     await pgTelemetry.logLlmCall({ prompt: "hello" }, { response: "world" });
@@ -79,7 +83,8 @@ async function main() {
   // ─── 3. PostgresTaskHistory graceful fallback ───────────────────────────
   console.log("\n--- PostgresTaskHistory Graceful Fallback ---");
   {
-    const history = new PostgresTaskHistory("postgresql://localhost:5432/nonexistent_test_db");
+    const pgConfig: DatabaseConfig = { ...loadDatabaseConfig(), type: "postgres", postgresUrl: "postgresql://localhost:5432/nonexistent_test_db" };
+    const history = new PostgresTaskHistory(createConnection(pgConfig));
     await history.append({
       id: "test_1",
       task: "test task",
@@ -100,7 +105,8 @@ async function main() {
   // ─── 4. PostgresProjectStore graceful fallback ──────────────────────────
   console.log("\n--- PostgresProjectStore Graceful Fallback ---");
   {
-    const store = new PostgresProjectStore("postgresql://localhost:5432/nonexistent_test_db");
+    const pgConfig: DatabaseConfig = { ...loadDatabaseConfig(), type: "postgres", postgresUrl: "postgresql://localhost:5432/nonexistent_test_db" };
+    const store = new PostgresProjectStore(createConnection(pgConfig));
     const projects = await store.list();
     assert(Array.isArray(projects), "list() returns an array (empty when DB unreachable)");
     const project = await store.get("nonexistent");
@@ -113,7 +119,8 @@ async function main() {
   // ─── 5. PlanStore graceful fallback ─────────────────────────────────────
   console.log("\n--- PlanStore Graceful Fallback ---");
   {
-    const store = new PlanStore("postgresql://localhost:5432/nonexistent_test_db");
+    const pgConfig: DatabaseConfig = { ...loadDatabaseConfig(), type: "postgres", postgresUrl: "postgresql://localhost:5432/nonexistent_test_db" };
+    const store = new PlanStore(createConnection(pgConfig));
     const plans = await store.listPlans();
     assert(Array.isArray(plans), "listPlans() returns an array (empty when DB unreachable)");
     const { plan, tasks } = await store.getPlan("nonexistent");

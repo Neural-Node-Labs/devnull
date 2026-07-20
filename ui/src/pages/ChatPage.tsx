@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, ChatOptions } from "../api/client";
 
@@ -8,6 +8,12 @@ interface ChatMessage {
   timestamp: Date;
   usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
   healthScore?: number;
+  /** When true, the server explicitly requested user input to continue (iteration limit hit).
+   *  The UI should highlight the "Continue" button in red to draw attention. */
+  continueRequested?: boolean;
+  /** When true, the run stopped because the iteration limit was reached. The UI should
+   *  highlight the limitation message in red to distinguish it from other limitation types. */
+  iterationMaxReached?: boolean;
 }
 
 const CHAT_STORAGE_KEY = "devnull_chat_state";
@@ -16,7 +22,8 @@ interface PersistedChatState {
   messages: ChatMessage[];
   input: string;
   planMode: "auto" | "always" | "never";
-  leanToken: boolean;
+  fullContextToken: boolean;
+  phasePlanning: boolean;
   isolatedWorkspace: boolean;
   maxIterations: number | "";
   showAdvanced: boolean;
@@ -61,6 +68,61 @@ function clearChatState(): void {
   }
 }
 
+/* ─── Toast Notification Helpers ─────────────────────────────────────────── */
+
+interface Toast {
+  id: number;
+  message: string;
+  type: "success" | "warning" | "error";
+}
+
+let toastIdCounter = 0;
+let globalSetToasts: React.Dispatch<React.SetStateAction<Toast[]>> | null = null;
+
+function showToast(message: string, type: Toast["type"] = "success"): void {
+  if (!globalSetToasts) return;
+  const id = ++toastIdCounter;
+  globalSetToasts((prev) => [...prev, { id, message, type }]);
+  // Auto-dismiss after 5 seconds
+  setTimeout(() => {
+    globalSetToasts?.((prev) => prev.filter((t) => t.id !== id));
+  }, 5000);
+}
+
+function requestBrowserNotification(title: string, body: string): void {
+  if (!("Notification" in window)) return;
+  if (Notification.permission === "granted") {
+    new Notification(title, { body });
+  } else if (Notification.permission !== "denied") {
+    Notification.requestPermission().then((permission) => {
+      if (permission === "granted") {
+        new Notification(title, { body });
+      }
+    });
+  }
+}
+
+/* ─── Toast Container Component ─────────────────────────────────────────── */
+
+function ToastContainer({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: number) => void }) {
+  if (toasts.length === 0) return null;
+  return (
+    <div className="devnull-toast-container">
+      {toasts.map((t) => (
+        <div
+          key={t.id}
+          className={`devnull-toast devnull-toast-${t.type}`}
+          onClick={() => onDismiss(t.id)}
+        >
+          {t.type === "success" ? "✅" : t.type === "warning" ? "⚠️" : "❌"} {t.message}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ─── ChatPage Component ────────────────────────────────────────────────── */
+
 export function ChatPage() {
   const [searchParams] = useSearchParams();
   const savedState = loadChatState();
@@ -73,7 +135,8 @@ export function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>(savedState?.messages ?? []);
   const [input, setInput] = useState(initialInput);
   const [planMode, setPlanMode] = useState<"auto" | "always" | "never">(savedState?.planMode ?? "always");
-  const [leanToken, setLeanToken] = useState(savedState?.leanToken ?? false);
+  const [fullContextToken, setFullContextToken] = useState(savedState?.fullContextToken ?? false);
+  const [phasePlanning, setPhasePlanning] = useState(savedState?.phasePlanning ?? false);
   const [isolatedWorkspace, setIsolatedWorkspace] = useState(savedState?.isolatedWorkspace ?? false);
   const [maxIterations, setMaxIterations] = useState<number | "">(savedState?.maxIterations ?? "");
   const [showAdvanced, setShowAdvanced] = useState(savedState?.showAdvanced ?? false);
@@ -84,10 +147,18 @@ export function ChatPage() {
   const [isListening, setIsListening] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [lastTaskText, setLastTaskText] = useState<string>(savedState?.lastTaskText ?? "");
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [showContinueDialog, setShowContinueDialog] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const recognitionRef = useRef<any>(null);
+
+  // Register the global toast setter so showToast() works from anywhere in this component
+  useEffect(() => {
+    globalSetToasts = setToasts;
+    return () => { globalSetToasts = null; };
+  }, []);
 
   // Persist state changes to sessionStorage
   useEffect(() => {
@@ -95,7 +166,8 @@ export function ChatPage() {
       messages,
       input,
       planMode,
-      leanToken,
+      fullContextToken,
+      phasePlanning,
       isolatedWorkspace,
       maxIterations,
       showAdvanced,
@@ -103,7 +175,7 @@ export function ChatPage() {
       sessionId,
       lastTaskText,
     });
-  }, [messages, input, planMode, leanToken, isolatedWorkspace, maxIterations, showAdvanced, currentPlan, sessionId, lastTaskText]);
+  }, [messages, input, planMode, fullContextToken, phasePlanning, isolatedWorkspace, maxIterations, showAdvanced, currentPlan, sessionId, lastTaskText]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -123,8 +195,8 @@ export function ChatPage() {
   }, [urlTask]);
 
   const buildOptions = (): ChatOptions => {
-    const opts: ChatOptions = { planMode };
-    if (leanToken) opts.leanToken = true;
+    const opts: ChatOptions = { planMode, phasePlanning };
+    if (fullContextToken) opts.fullContextToken = true;
     if (isolatedWorkspace) opts.isolatedWorkspace = true;
     if (maxIterations !== "" && maxIterations > 0) opts.maxIterations = maxIterations;
     return opts;
@@ -365,8 +437,8 @@ export function ChatPage() {
   };
 
   return (
-    <div>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "24px" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 48px - 48px)", /* viewport minus navbar minus main padding */ }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "16px", flexShrink: 0 }}>
         <h1 style={{ fontSize: "24px", fontWeight: 700, margin: 0 }}>Chat</h1>
         {messages.length > 0 && (
           <button onClick={handleNewChat} style={{ padding: "6px 14px", borderRadius: "6px", border: "1px solid var(--color-border)", background: "transparent", color: "var(--color-text-secondary)", fontSize: "13px", cursor: "pointer" }}>
@@ -375,8 +447,8 @@ export function ChatPage() {
         )}
       </div>
 
-      {/* Chat messages */}
-      <div role="log" aria-live="polite" aria-label="Chat messages" style={{ ...sectionStyle, maxHeight: "480px", overflowY: "auto", display: "flex", flexDirection: "column", gap: "12px" }}>
+      {/* Chat messages — scrollable, fills remaining space */}
+      <div role="log" aria-live="polite" aria-label="Chat messages" style={{ ...sectionStyle, flex: "1 1 auto", overflowY: "auto", display: "flex", flexDirection: "column", gap: "12px", minHeight: 0 }}>
         {messages.length === 0 ? (
           <p style={{ color: "var(--color-text-secondary)", textAlign: "center", padding: "40px" }}>
             Send a message to start chatting with devnull
@@ -469,8 +541,8 @@ export function ChatPage() {
         </div>
       )}
 
-      {/* Input area */}
-      <div style={sectionStyle}>
+      {/* Input area — always visible at the bottom */}
+      <div style={{ ...sectionStyle, flexShrink: 0, marginBottom: 0 }}>
         <div style={{ display: "flex", gap: "8px", marginBottom: "12px", alignItems: "center", flexWrap: "wrap" }}>
           <select
             value={planMode}
@@ -512,8 +584,12 @@ export function ChatPage() {
         {showAdvanced && (
           <div style={{ display: "flex", gap: "16px", alignItems: "center", flexWrap: "wrap", padding: "12px", marginBottom: "12px", background: "var(--color-bg-secondary)", borderRadius: "6px" }}>
             <label style={checkboxLabel}>
-              <input type="checkbox" checked={leanToken} onChange={(e) => setLeanToken(e.target.checked)} />
-              Lean token mode
+              <input type="checkbox" checked={fullContextToken} onChange={(e) => setFullContextToken(e.target.checked)} />
+              Full context mode
+            </label>
+            <label style={checkboxLabel}>
+              <input type="checkbox" checked={phasePlanning} onChange={(e) => setPhasePlanning(e.target.checked)} />
+              Phase planning
             </label>
             <label style={checkboxLabel}>
               <input type="checkbox" checked={isolatedWorkspace} onChange={(e) => setIsolatedWorkspace(e.target.checked)} />

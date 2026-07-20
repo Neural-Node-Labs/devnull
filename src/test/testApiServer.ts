@@ -1,14 +1,14 @@
 /**
  * API server test suite.
  *
- * Tests the devnull HTTP API endpoints with and without authentication.
+ * Tests the devnull HTTP API endpoints with authentication.
  * Runs against a real Express server on a fixed port.
  *
  * Usage:
  *   node dist/test/testApiServer.js
  *
- * Environment:
- *   ADMIN_PASSWORD  — if set, tests auth-required behavior (login + token); if unset, tests open-access mode
+ * The first user is registered via /api/v1/register, then the token
+ * is used for all subsequent authenticated requests.
  */
 
 import http from "node:http";
@@ -181,13 +181,60 @@ async function test404(): Promise<void> {
   assertEqual(b.error, "Not found", "response.error === 'Not found'");
 }
 
+async function testRegisterEndpoint(): Promise<void> {
+  console.log("\n--- Register endpoint ---");
+
+  // Register the first user (should succeed since no users exist yet)
+  const r1 = await fetchJson(`${baseUrl}/api/v1/register`, {
+    method: "POST",
+    body: { username: "testadmin", password: "testpass123" },
+    token: undefined,
+  });
+  assertEqual(r1.status, 201, "POST /api/v1/register with valid data returns 201");
+  const b1 = r1.body as Record<string, unknown>;
+  assertEqual(b1.success, true, "response.success === true");
+  const d1 = b1.data as Record<string, unknown>;
+  assert(typeof d1.token === "string", "response.data.token is a string");
+  assertEqual(d1.username, "testadmin", "response.data.username === 'testadmin'");
+  assertEqual(d1.role, "admin", "response.data.role === 'admin' (first user)");
+
+  // Store the token for subsequent tests
+  apiToken = d1.token as string;
+
+  // Try to register again (should fail — users already exist)
+  const r2 = await fetchJson(`${baseUrl}/api/v1/register`, {
+    method: "POST",
+    body: { username: "another", password: "pass1234" },
+    token: undefined,
+  });
+  assertEqual(r2.status, 403, "POST /api/v1/register when users exist returns 403");
+  const b2 = r2.body as Record<string, unknown>;
+  assertEqual(b2.success, false, "response.success === false");
+
+  // Register with missing fields
+  const r3 = await fetchJson(`${baseUrl}/api/v1/register`, {
+    method: "POST",
+    body: {},
+    token: undefined,
+  });
+  assertEqual(r3.status, 400, "POST /api/v1/register with empty body returns 400");
+
+  // Register with short password
+  const r4 = await fetchJson(`${baseUrl}/api/v1/register`, {
+    method: "POST",
+    body: { username: "test", password: "ab" },
+    token: undefined,
+  });
+  assertEqual(r4.status, 400, "POST /api/v1/register with short password returns 400");
+}
+
 async function testLoginEndpoint(): Promise<void> {
   console.log("\n--- Login endpoint ---");
 
   // Login with correct credentials
   const r1 = await fetchJson(`${baseUrl}/api/v1/login`, {
     method: "POST",
-    body: { username: "admin", password: "admin" },
+    body: { username: "testadmin", password: "testpass123" },
     token: undefined,
   });
   assertEqual(r1.status, 200, "POST /api/v1/login with correct credentials returns 200");
@@ -195,13 +242,13 @@ async function testLoginEndpoint(): Promise<void> {
   assertEqual(b1.success, true, "response.success === true");
   const d1 = b1.data as Record<string, unknown>;
   assert(typeof d1.token === "string", "response.data.token is a string");
-  assertEqual(d1.username, "admin", "response.data.username === 'admin'");
+  assertEqual(d1.username, "testadmin", "response.data.username === 'testadmin'");
   assertEqual(d1.role, "admin", "response.data.role === 'admin'");
 
   // Login with wrong password
   const r2 = await fetchJson(`${baseUrl}/api/v1/login`, {
     method: "POST",
-    body: { username: "admin", password: "wrong" },
+    body: { username: "testadmin", password: "wrong" },
     token: undefined,
   });
   assertEqual(r2.status, 401, "POST /api/v1/login with wrong password returns 401");
@@ -220,31 +267,36 @@ async function testLoginEndpoint(): Promise<void> {
 }
 
 async function testAuth(): Promise<void> {
-  if (!apiToken) {
-    console.log("\n--- Auth (skipped: ADMIN_PASSWORD not set) ---");
-    console.log("  SKIP: No ADMIN_PASSWORD configured — API runs in open-access mode");
-    return;
-  }
-
   console.log("\n--- Auth ---");
 
-  // Request without token — use a helper that doesn't fall back to apiToken
-  const r1 = await fetchJson(`${baseUrl}/api/v1/health`, { token: "" });
-  assertEqual(r1.status, 401, "GET /api/v1/health without token returns 401");
+  // Request without token (use /skills which requires auth; /health is intentionally unauthenticated)
+  const r1 = await fetchJson(`${baseUrl}/api/v1/skills`, { token: "" });
+  assertEqual(r1.status, 401, "GET /api/v1/skills without token returns 401");
   const b1 = r1.body as Record<string, unknown>;
   assertEqual(b1.success, false, "response.success === false");
 
   // Request with wrong token
-  const r2 = await fetchJson(`${baseUrl}/api/v1/health`, { token: "wrong-token" });
-  assertEqual(r2.status, 403, "GET /api/v1/health with wrong token returns 403");
+  const r2 = await fetchJson(`${baseUrl}/api/v1/skills`, { token: "wrong-token" });
+  assertEqual(r2.status, 403, "GET /api/v1/skills with wrong token returns 403");
   const b2 = r2.body as Record<string, unknown>;
   assertEqual(b2.success, false, "response.success === false");
 
-  // Request with correct token (obtained via login)
-  const r3 = await fetchJson(`${baseUrl}/api/v1/health`, { token: apiToken });
-  assertEqual(r3.status, 200, "GET /api/v1/health with correct token returns 200");
+  // Request with correct token (obtained via register)
+  const r3 = await fetchJson(`${baseUrl}/api/v1/skills`, { token: apiToken! });
+  assertEqual(r3.status, 200, "GET /api/v1/skills with correct token returns 200");
   const b3 = r3.body as Record<string, unknown>;
   assertEqual(b3.success, true, "response.success === true");
+}
+
+async function testUserCountEndpoint(): Promise<void> {
+  console.log("\n--- User count endpoint ---");
+
+  const { status, body } = await fetchJson(`${baseUrl}/api/v1/users/count`, { token: undefined });
+  assertEqual(status, 200, "GET /api/v1/users/count returns 200");
+  const b = body as Record<string, unknown>;
+  assertEqual(b.success, true, "response.success === true");
+  const data = b.data as Record<string, unknown>;
+  assertEqual(data.count, 1, "data.count === 1 (one user registered)");
 }
 
 /* ------------------------------------------------------------------ */
@@ -254,8 +306,6 @@ async function testAuth(): Promise<void> {
 async function main(): Promise<void> {
   // Use a fixed port to avoid issues with port 0 on some platforms
   const TEST_PORT = 18991;
-  const adminPassword = (process.env.ADMIN_PASSWORD ?? "").trim();
-  apiToken = adminPassword || null;
 
   server = startApiServer({ port: TEST_PORT, host: "127.0.0.1" });
   baseUrl = `http://127.0.0.1:${TEST_PORT}`;
@@ -264,31 +314,16 @@ async function main(): Promise<void> {
   // Small delay to ensure server is ready
   await sleep(200);
 
-  // If auth is enabled, obtain a token via login first
-  if (apiToken) {
-    const loginResp = await fetchJson(`${baseUrl}/api/v1/login`, {
-      method: "POST",
-      body: { username: "admin", password: adminPassword },
-      token: undefined,
-    });
-    if (loginResp.status === 200) {
-      const loginBody = loginResp.body as Record<string, unknown>;
-      const loginData = loginBody.data as Record<string, unknown>;
-      apiToken = loginData.token as string;
-      console.log(`  Obtained auth token via login`);
-    } else {
-      console.log(`  WARNING: Login failed with status ${loginResp.status}`);
-    }
-  }
-
-  // Run tests
+  // Run tests — register first to get a token, then use that token for all other endpoints
+  await testRegisterEndpoint();
+  await testLoginEndpoint();
+  await testAuth();
+  await testUserCountEndpoint();
   await testHealthEndpoint();
   await testChatEndpointValidation();
   await testTelemetryEndpoint();
   await testSkillsEndpoint();
   await test404();
-  await testLoginEndpoint();
-  await testAuth();
 
   // Summary
   console.log(`\n=== Results: ${passed} passed, ${failed} failed ===`);

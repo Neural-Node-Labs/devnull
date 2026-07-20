@@ -1,8 +1,8 @@
 import { LlmMessage } from "./types.js";
 
 /**
- * "Lean token" context compaction — opt-in via OrchestratorOptions.leanToken (default: false,
- * existing full-history behavior is untouched unless explicitly enabled).
+ * Context compaction (lean-token mode) — enabled by default. Set
+ * OrchestratorOptions.fullContextToken to true to keep the full history instead.
  *
  * What this does NOT touch, and why:
  *   - Every assistant message's `tool_calls` (the Action) and `reasoning_content` stay exactly

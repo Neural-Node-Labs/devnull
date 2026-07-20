@@ -1,6 +1,8 @@
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { LlmClient, LlmMessage, ReActStep, TelemetryInterface, LoadedSkill, Phase, LlmUsage } from "./types.js";
+import fs from "node:fs";
+import path from "node:path";
+import { LlmClient, LlmMessage, ReActStep, TelemetryInterface, LoadedSkill, Phase, LlmUsage, SubagentResult, ReActMemory, ScoreEntry, HealthScore, DEFAULT_HEALTH_SCORE } from "./types.js";
 import { SkillRegistry } from "./skillRegistry.js";
 import { TOOL_SCHEMAS } from "../tools/toolSchemas.js";
 import { dispatchToolCall } from "../tools/toolDispatcher.js";
@@ -15,11 +17,20 @@ import {
   reportUsage,
   reportTotalUsage,
   reportHealthWarning,
+  reportPhaseStats,
 } from "./consoleReporter.js";
 import { compactStaleFileReads } from "./contextCompaction.js";
 import { createHealthState, scoreStep, rollingHealth, HealthState } from "./stepScorer.js";
 import { appendTaskHistory } from "./taskHistory.js";
+import { TaskHistoryStore } from "../api/taskHistoryStore.js";
+import { PhaseReportStore } from "../api/phaseReportStore.js";
+import { WbsStore } from "../api/wbsStore.js";
 import { prepareWorkspace } from "./workspaceManager.js";
+
+const ANSI_GREEN = "\x1b[32m";
+const ANSI_RESET = "\x1b[0m";
+const ANSI_YELLOW = "\x1b[33m";
+
 
 export interface OrchestratorOptions {
   maxIterations?: number; // "iteration maxout" ceiling per round
@@ -34,6 +45,15 @@ export interface OrchestratorOptions {
    * Defaults to true (interactive prompts enabled).
    */
   interactive?: boolean;
+  /**
+   * When true, the orchestrator runs in fully autonomous mode — automatically answering "yes"
+   * to ALL interactive prompts (plan approval, phase plan approval, iteration limit continuation,
+   * subagent continuation). This is the "auto-pilot" mode: the LLM drives end-to-end without
+   * any human intervention. Overrides `interactive` and `continueOnLimit`. Set this for CI/CD,
+   * automated testing, or any scenario where zero human input is desired.
+   * Defaults to false.
+   */
+  auto?: boolean;
   /**
    * When true, the orchestrator auto-continues past the iteration limit instead of stopping.
    * Used by the API when the UI sends continueOnLimit: true. Overrides onIterationLimitReached.
@@ -55,12 +75,19 @@ export interface OrchestratorOptions {
   /** Internal — nesting depth used to indent subagent console output. Do not set directly. */
   consoleIndent?: number;
   /**
-   * When true, collapses stale/superseded read_tool Observations (earlier full-file snapshots
-   * of a path that's since been re-read or edited) down to a short placeholder instead of
-   * keeping every historical copy in context — see src/core/contextCompaction.ts for exactly
-   * what is and isn't touched, and why. Default: false — existing full-history behavior.
+   * When true (default), collapses stale/superseded read_tool Observations (earlier full-file
+   * snapshots of a path that's since been re-read or edited) down to a short placeholder
+   * instead of keeping every historical copy in context — see src/core/contextCompaction.ts
+   * for exactly what is and isn't touched, and why. Set fullContextToken to true to keep the
+   * full history (the old default behavior).
    */
   leanToken?: boolean;
+  /**
+   * When true, keeps every historical copy of read_tool file snapshots in context instead of
+   * collapsing stale/superseded ones (the default lean-token behavior). Set this to opt out
+   * of context compaction and preserve the full read history. Default: false.
+   */
+  fullContextToken?: boolean;
   /**
    * When true (default), scores each tool step heuristically (see stepScorer.ts) and, if the
    * rolling average drops low, injects a one-time nudge into context asking the model to
@@ -79,6 +106,15 @@ export interface OrchestratorOptions {
   /** Internal — lets subagents inherit the real project root for protocol/history/todo even
    *  when their `cwd` points at an already-isolated workspace-agent copy. Do not set directly. */
   projectRoot?: string;
+  /**
+   * When true, disables phase-based planning and runs as a single ReAct loop instead.
+   * Phase planning (default ON) divides the task into multiple phases, each running as a
+   * sub-orchestrator with isolated ReAct memory. Results from completed phases are summarized
+   * and passed to the next phase. This reduces per-phase token footprint at the cost of losing
+   * cross-phase context continuity. See enhancement/planning.md.
+   * Default: false (phase planning is ON).
+   */
+  singlePhase?: boolean;
 }
 
 export interface RunOptions {
@@ -116,21 +152,186 @@ export class ReActOrchestrator {
    *  runSubagent(), which folds each subagent's total into its parent's before returning. */
   private cumulativeUsage: LlmUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0, reasoningTokens: 0, cachedTokens: 0 };
   private llmCallCount = 0;
+  /** Total ReAct loop iterations across all restarts for this run (not just the current round).
+   *  Reset to 0 at the start of each run() call. Each iteration is one LLM call + tool execution
+   *  cycle. This is the "iteration count" reported in task history and phase reports. */
+  private iterationCount = 0;
   private health: HealthState = createHealthState();
+  /** ReAct memory with health score tracking (0.0-1.0 scale, with history and trend). */
+  private memory: ReActMemory = { healthScore: { ...DEFAULT_HEALTH_SCORE } };
   private lastNudgeIteration = -Infinity;
-  private lastOutcome: "completed" | "iteration_limit" | "plan_rejected" = "completed";
+  private lastOutcome: "completed" | "iteration_limit" | "plan_rejected" | "partial_success" | "partial_completion" = "completed";
+  /** The last ReAct message history from the most recent run() call. Used by runSubagent()
+   *  to extract accumulated context (tool calls, observations, last thought) when a subagent
+   *  hits the iteration limit. */
+  private lastMessages: LlmMessage[] = [];
+
+  /**
+   * Captures what was accomplished before the iteration limit was hit. Populated when the
+   * orchestrator hits the iteration limit and synthesizes a partial-completion report.
+   * Contains the last N tool calls, their results, and any files modified, so callers
+   * (e.g. the API) can surface this information to the user.
+   */
+  private partialSuccess?: {
+    /** The last N tool calls made before the iteration limit was hit. */
+    toolCalls: { name: string; args: string; result: string }[];
+    /** Files that were modified during the run (write_edit_tool calls). */
+    filesModified: string[];
+    /** Files that were read during the run (read_tool calls). */
+    filesRead: string[];
+    /** Commands that were executed (run_command_tool calls). */
+    commandsRun: string[];
+    /** The last assistant thought before hitting the limit. */
+    lastThought: string;
+    /** How many iterations were completed before hitting the limit. */
+    iterationCount: number;
+    /** How many restarts occurred. */
+    restartCount: number;
+  };
+
+  /** Read-only view of the partial success context, if any. Used by the API to include
+   *  partial-progress information in limitation responses so the UI can show what was
+   *  accomplished before the iteration limit was hit. */
+  getPartialSuccess(): typeof this.partialSuccess {
+    return this.partialSuccess;
+  }
 
   /** How the most recent run() call ended. "completed" means a genuine final answer was
-   *  reached; anything else means the returned text is a fallback explanation, not a real
-   *  result, and callers (e.g. the API) should surface that distinction rather than treating
-   *  it as a normal success. */
-  getLastOutcome(): "completed" | "iteration_limit" | "plan_rejected" {
+   *  reached; "partial_success" means the iteration limit was hit but meaningful progress
+   *  was made and a summary was produced; "partial_completion" means the iteration limit
+   *  was hit and a detailed partial-success record was captured with tool calls, results,
+   *  and files modified; anything else means the returned text is a fallback explanation,
+   *  not a real result, and callers (e.g. the API) should surface that distinction rather
+   *  than treating it as a normal success. */
+  getLastOutcome(): "completed" | "iteration_limit" | "plan_rejected" | "partial_success" | "partial_completion" {
     return this.lastOutcome;
+  }
+
+  /**
+   * When a subagent hit the iteration limit and the user declined to continue (or the API
+   * returned false from onIterationLimitReached), this contains the subagent's preserved
+   * context so the API can pass it back to the UI for a "Continue" button that preserves
+   * the subagent's progress. Undefined when no subagent limit was encountered.
+   */
+  private subagentLimitContext?: {
+    lastThought: string;
+    toolCalls: string[];
+    observations: string[];
+    iterationCount: number;
+  };
+
+  /** Read-only view of the subagent limit context, if any. Used by the API to include
+   *  preserved subagent context in limitation responses so the UI can re-send it. */
+  getSubagentLimitContext(): { lastThought: string; toolCalls: string[]; observations: string[]; iterationCount: number } | undefined {
+    return this.subagentLimitContext;
   }
 
   /** Read-only view of this run's rolling self-healing health score (0-100, 100 = no signal yet). */
   getHealthScore(window = 5): number {
     return rollingHealth(this.health, window);
+  }
+
+  /**
+   * Read-only view of the ReAct memory health score (0.0-1.0 scale with history and trend).
+   * Returns the current HealthScore object including current value, history, and trend.
+   */
+  getMemoryHealthScore(): HealthScore {
+    return { ...this.memory.healthScore };
+  }
+
+  /**
+   * Updates the ReAct memory health score after each tool call and observation.
+   *
+   * Two strategies, tried in order:
+   * 1. **LLM self-assessment** — parses the LLM's reasoning for a `score: X` token
+   *    (e.g., `score: 0.7`) on a 0.0-1.0 scale. If found and valid, uses that value.
+   * 2. **Heuristic fallback** — if the last tool call succeeded and produced a non-empty
+   *    observation, increment by 0.1 (capped at 1.0); if it failed or errored, decrement
+   *    by 0.2 (floored at 0.0).
+   *
+   * Appends a ScoreEntry to memory.healthScore.history and recalculates the trend
+   * based on the last 3 entries.
+   */
+  private updateHealthScore(
+    thought: string,
+    toolName: string,
+    observation: unknown,
+    isError: boolean
+  ): void {
+    let newScore: number;
+    let reason: string;
+
+    // Strategy 1: Try to parse a self-assessed score from the LLM's reasoning
+    const parsedScore = this.parseSelfAssessedScore(thought);
+    if (parsedScore !== null) {
+      newScore = parsedScore;
+      reason = `self-assessed score: ${parsedScore.toFixed(2)}`;
+    } else {
+      // Strategy 2: Heuristic fallback based on tool call success/failure
+      const obsStr = typeof observation === "string" ? observation : JSON.stringify(observation);
+      if (isError) {
+        newScore = Math.max(0, this.memory.healthScore.current - 0.2);
+        reason = `tool call errored: ${toolName}`;
+      } else if (obsStr && obsStr.length > 0 && obsStr !== "null" && obsStr !== "undefined") {
+        newScore = Math.min(1.0, this.memory.healthScore.current + 0.1);
+        reason = `tool call succeeded: ${toolName}`;
+      } else {
+        // Tool succeeded but returned empty — mild penalty (no progress)
+        newScore = Math.max(0, this.memory.healthScore.current - 0.05);
+        reason = `tool call returned empty: ${toolName}`;
+      }
+    }
+
+    // Update current score
+    this.memory.healthScore.current = newScore;
+
+    // Append ScoreEntry to history
+    const entry: ScoreEntry = {
+      timestamp: new Date().toISOString(),
+      score: newScore,
+      reason,
+    };
+    this.memory.healthScore.history.push(entry);
+
+    // Recalculate trend based on last 3 entries
+    this.memory.healthScore.trend = this.calculateTrend(
+      this.memory.healthScore.history.slice(-3)
+    );
+  }
+
+  /**
+   * Parses the LLM's reasoning for a self-assessed score token.
+   * Looks for patterns like `score: 0.7` or `score:0.7` on a 0.0-1.0 scale.
+   * Returns the parsed number (0.0-1.0) or null if not found/invalid.
+   */
+  private parseSelfAssessedScore(thought: string): number | null {
+    if (!thought) return null;
+
+    // Match patterns: "score: 0.7", "score:0.7", "score: .7", "score: 1"
+    const match = thought.match(/score\s*:\s*(\d+(?:\.\d+)?|\.\d+)/i);
+    if (!match) return null;
+
+    const value = parseFloat(match[1]);
+    if (isNaN(value) || value < 0 || value > 1) return null;
+
+    return value;
+  }
+
+  /**
+   * Calculates the trend direction based on the last N score entries.
+   * - 'up' if the most recent score is higher than the earliest
+   * - 'down' if the most recent score is lower than the earliest
+   * - 'stable' if they're equal or there's only 1 entry
+   */
+  private calculateTrend(entries: ScoreEntry[]): "up" | "down" | "stable" {
+    if (entries.length < 2) return "stable";
+
+    const first = entries[0].score;
+    const last = entries[entries.length - 1].score;
+
+    if (last > first) return "up";
+    if (last < first) return "down";
+    return "stable";
   }
 
   constructor(
@@ -154,6 +355,18 @@ export class ReActOrchestrator {
     return { ...this.cumulativeUsage };
   }
 
+  /** Read-only view of this run's total ReAct loop iterations (includes subagent iterations). */
+  getIterationCount(): number {
+    return this.iterationCount;
+  }
+
+  /** Read-only view of the last ReAct message history from the most recent run() call.
+   *  Used by runSubagent() to extract accumulated context (tool calls, observations,
+   *  last thought) when a subagent hits the iteration limit. */
+  getLastMessages(): LlmMessage[] {
+    return this.lastMessages;
+  }
+
   private addUsage(usage: LlmUsage | undefined): void {
     if (!usage) return;
     this.llmCallCount += 1;
@@ -173,6 +386,7 @@ export class ReActOrchestrator {
     this.cumulativeUsage.reasoningTokens = (this.cumulativeUsage.reasoningTokens ?? 0) + (subUsage.reasoningTokens ?? 0);
     this.cumulativeUsage.cachedTokens = (this.cumulativeUsage.cachedTokens ?? 0) + (subUsage.cachedTokens ?? 0);
     this.llmCallCount += sub.llmCallCount;
+    this.iterationCount += sub.getIterationCount();
   }
 
   /** Route the task to one or more skills (multi-skill composition via composes_with). */
@@ -227,6 +441,15 @@ export class ReActOrchestrator {
       }
     }
 
+    // --- Phase Planning ---
+    // When phasePlanning is enabled, the task is divided into multiple phases, each running as
+    // a sub-orchestrator with isolated ReAct memory. Results from completed phases are summarized
+    // and passed to the next phase. This reduces per-phase token footprint at the cost of losing
+    // cross-phase context continuity. See enhancement/planning.md.
+    if (!this.opts.singlePhase && !runOpts.isSubagent) {
+      return await this.runPhasePlanning(taskDescription, skills, runOpts);
+    }
+
     const messages: LlmMessage[] = [
       { role: "system", content: buildSystemPrompt(skills, this.projectRoot) },
       { role: "user", content: taskDescription },
@@ -242,15 +465,27 @@ export class ReActOrchestrator {
 
     while (true) {
       iteration += 1;
+      this.iterationCount += 1;
 
       if (iteration > maxIterations) {
         if (runOpts.isSubagent) {
           // Subagents don't interactively prompt — they just stop and report what they have.
-          finalContent = "(subagent hit iteration limit without completing)";
+          // Instead of a hardcoded string, synthesize a meaningful report from the message
+          // history so the parent orchestrator gets useful partial-progress information.
+          this.lastOutcome = "partial_success";
+          finalContent = await this.synthesizeReport(
+            taskDescription,
+            messages,
+            finalContent,
+            maxIterations,
+            restartCount
+          );
           break;
         }
-        // continueOnLimit takes highest priority — auto-continue without asking
-        const shouldContinue = this.opts.continueOnLimit
+        // auto mode takes highest priority — auto-continue without asking
+        const shouldContinue = this.opts.auto
+          ? true
+          : this.opts.continueOnLimit
           ? true
           : this.opts.onIterationLimitReached
           ? await this.opts.onIterationLimitReached(taskDescription, iteration - 1)
@@ -264,10 +499,24 @@ export class ReActOrchestrator {
         });
         if (!shouldContinue) {
           console.log("Stopping at user's request.");
-          this.lastOutcome = "iteration_limit";
-          finalContent =
-            finalContent ||
-            `(Task stopped: hit the ${maxIterations}-iteration limit${restartCount > 0 ? ` after ${restartCount} restart(s)` : ""} without reaching a final answer. Partial progress may exist in the workspace — check task_history_tool or the workspace files directly.)`;
+          this.lastOutcome = "partial_success";
+          // Capture partial-success context before synthesizing the report.
+          // This extracts the last N tool calls, files modified, files read,
+          // commands run, and the last thought from the message history.
+          // Callers (e.g. the API) can retrieve this via getPartialSuccess()
+          // and include it in the response alongside the limitation field.
+          this.extractPartialSuccessContext(messages, this.iterationCount, restartCount);
+          // Always synthesize a proper report from the message history instead of
+          // relying on finalContent (which may be empty or just a brief thought from
+          // a tool-calling turn). This ensures the orchestrator NEVER returns an
+          // empty or meaningless string — the user always gets a useful summary.
+          finalContent = await this.synthesizeReport(
+            taskDescription,
+            messages,
+            finalContent,
+            maxIterations,
+            restartCount
+          );
           break;
         }
         restartCount += 1;
@@ -370,6 +619,64 @@ export class ReActOrchestrator {
             action: { tool: "subagent_tool", input: safeParse(call.function.arguments) },
             observation,
           });
+
+          // If the subagent hit the iteration limit, ask the user whether to continue.
+          // When "yes", reset the subagent's iteration counter and re-invoke it with
+          // the preserved context (partialOutput). When "no", synthesize a partial
+          // completion report from the subagent's accumulated work.
+          if (observation.status === "iteration_limit") {
+            // auto mode takes highest priority — auto-continue without asking
+            const shouldContinue = this.opts.auto
+              ? true
+              : this.opts.continueOnLimit
+              ? true
+              : this.opts.onIterationLimitReached
+              ? await this.opts.onIterationLimitReached(taskDescription, this.iterationCount)
+              : await this.askContinueSubagent(
+                  taskDescription,
+                  observation.iterationCount,
+                  observation.partialOutput?.lastThought ?? "",
+                  observation.partialOutput?.toolCalls ?? [],
+                  observation.partialOutput?.observations ?? []
+                );
+
+            if (shouldContinue) {
+              // Re-invoke the subagent with preserved context. We pass the subagent's
+              // accumulated context (last thought, tool calls, observations) as additional
+              // context so the new subagent run can pick up where the previous one left off.
+              const continuationTask = `${JSON.parse(call.function.arguments).task}\n\n[CONTINUATION — previous subagent run hit the iteration limit after ${observation.iterationCount} iterations. The following context was preserved from the previous run:]\n\nLast thought:\n${observation.partialOutput?.lastThought ?? "(none)"}\n\nTool calls made:\n${(observation.partialOutput?.toolCalls ?? []).map((tc) => `- ${tc}`).join("\n")}\n\nKey observations:\n${(observation.partialOutput?.observations ?? []).map((o) => `- ${o}`).join("\n")}\n\nContinue from where you left off. Do not repeat work that was already completed.`;
+              const continuationArgs = JSON.stringify({ task: continuationTask });
+              const continuationResult = await this.runSubagent(continuationArgs);
+              if (showConsole) reportObservation(continuationResult, false, indent);
+              // Use the continuation result as the final observation for this subagent call
+              messages.push({ role: "tool", tool_call_id: call.id, name: "subagent_tool", content: JSON.stringify(continuationResult) });
+              continue;
+            } else {
+              // User declined to continue — synthesize a partial completion report
+              // from the subagent's accumulated work and use that as the observation.
+              // Also store the subagent's preserved context so the API can pass it
+              // back to the UI for a "Continue" button that preserves the subagent's
+              // progress (see getSubagentLimitContext()).
+              this.subagentLimitContext = {
+                lastThought: observation.partialOutput?.lastThought ?? "",
+                toolCalls: observation.partialOutput?.toolCalls ?? [],
+                observations: observation.partialOutput?.observations ?? [],
+                iterationCount: observation.iterationCount,
+              };
+              this.lastOutcome = "partial_success";
+              const partialReport = await this.synthesizeSubagentPartialReport(
+                taskDescription,
+                observation.iterationCount,
+                observation.partialOutput?.lastThought ?? "",
+                observation.partialOutput?.toolCalls ?? [],
+                observation.partialOutput?.observations ?? [],
+                messages // pass full conversation history for richer context
+              );
+              messages.push({ role: "tool", tool_call_id: call.id, name: "subagent_tool", content: JSON.stringify({ status: "partial_success", summary: partialReport, iterationCount: observation.iterationCount }) });
+              continue;
+            }
+          }
+
           messages.push({ role: "tool", tool_call_id: call.id, name: "subagent_tool", content: JSON.stringify(observation) });
           continue;
         }
@@ -411,10 +718,11 @@ export class ReActOrchestrator {
           content: JSON.stringify(result.observation),
         });
 
-        // Lean token mode: a fresh read_tool or write_edit_tool observation for a path makes
-        // any earlier read_tool observation of that same path stale — collapse it. Only runs
-        // when explicitly opted in; see contextCompaction.ts for exactly what this does.
-        if (this.opts.leanToken && (result.toolName === "read_tool" || result.toolName === "write_edit_tool")) {
+        // Context compaction (lean-token mode, default ON): a fresh read_tool or write_edit_tool
+        // observation for a path makes any earlier read_tool observation of that same path stale
+        // — collapse it. Set fullContextToken to true to keep the full history instead.
+        // See contextCompaction.ts for exactly what this does.
+        if (!this.opts.fullContextToken && (result.toolName === "read_tool" || result.toolName === "write_edit_tool")) {
           const args = step.action?.input as { filePath?: string } | undefined;
           if (args?.filePath) {
             compactStaleFileReads(messages, args.filePath, result.toolCallId);
@@ -441,12 +749,22 @@ export class ReActOrchestrator {
       appendTodoReview(this.projectRoot, finalContent);
     }
     if (!runOpts.isSubagent) {
-      appendTaskHistory(this.projectRoot, {
+      const historyEntry = {
         task: taskDescription,
         summary: finalContent,
-        iterations: iteration,
+        iterations: this.iterationCount,
         totalTokens: this.cumulativeUsage.totalTokens || undefined,
+      };
+      appendTaskHistory(this.projectRoot, historyEntry);
+      // Also persist to PostgreSQL (best-effort)
+      const taskHistoryStore = new TaskHistoryStore();
+      await taskHistoryStore.save({
+        task: historyEntry.task,
+        summary: historyEntry.summary,
+        iterations: historyEntry.iterations,
+        totalTokens: historyEntry.totalTokens ?? null,
       });
+      await taskHistoryStore.close();
     }
     if (showConsole && !runOpts.isSubagent) {
       reportTotalUsage(this.cumulativeUsage, this.llmCallCount, indent);
@@ -458,16 +776,304 @@ export class ReActOrchestrator {
   }
 
   /**
-   * Delegates a focused task to a fresh orchestrator instance with isolated message history.
-   * Only the final text summary is returned to the caller — matches "Subagent Strategy":
-   * offload research/exploration to keep the main context window clean.
+   * Extracts partial-success context from the message history when the iteration limit is hit.
+   * Captures the last N tool calls, their results, files modified, files read, commands run,
+   * and the last assistant thought. This context is stored in `this.partialSuccess` and can be
+   * retrieved by callers (e.g. the API) via `getPartialSuccess()`.
+   *
+   * @param messages - The full ReAct message history
+   * @param iterationCount - How many iterations were completed before hitting the limit
+   * @param restartCount - How many restarts occurred
    */
-  private async runSubagent(argsJson: string): Promise<{ summary: string }> {
+  private extractPartialSuccessContext(
+    messages: LlmMessage[],
+    iterationCount: number,
+    restartCount: number
+  ): void {
+    const toolCalls: { name: string; args: string; result: string }[] = [];
+    const filesModified: string[] = [];
+    const filesRead: string[] = [];
+    const commandsRun: string[] = [];
+    let lastThought = "";
+
+    // Walk backwards through messages to find the last N tool calls and their results
+    const MAX_TOOL_CALLS = 10;
+    for (let i = messages.length - 1; i >= 0 && toolCalls.length < MAX_TOOL_CALLS; i--) {
+      const msg = messages[i];
+
+      if (msg.role === "assistant" && msg.content) {
+        if (!lastThought) lastThought = msg.content;
+      }
+
+      if (msg.role === "assistant" && msg.tool_calls) {
+        for (const tc of msg.tool_calls) {
+          if (toolCalls.length >= MAX_TOOL_CALLS) break;
+          const name = tc.function.name;
+          const args = tc.function.arguments;
+
+          // Track files modified (write_edit_tool)
+          if (name === "write_edit_tool") {
+            try {
+              const parsed = JSON.parse(args);
+              if (parsed.filePath) filesModified.push(parsed.filePath);
+            } catch { /* ignore parse errors */ }
+          }
+
+          // Track files read (read_tool)
+          if (name === "read_tool") {
+            try {
+              const parsed = JSON.parse(args);
+              if (parsed.filePath) filesRead.push(parsed.filePath);
+            } catch { /* ignore parse errors */ }
+          }
+
+          // Track commands run (run_command_tool)
+          if (name === "run_command_tool") {
+            try {
+              const parsed = JSON.parse(args);
+              if (parsed.command) commandsRun.push(parsed.command.slice(0, 100));
+            } catch { /* ignore parse errors */ }
+          }
+
+          // Find the corresponding tool result (the next tool-role message with matching id)
+          let result = "";
+          for (let j = i + 1; j < messages.length; j++) {
+            if (messages[j].role === "tool" && messages[j].tool_call_id === tc.id) {
+              const content = typeof messages[j].content === "string"
+                ? messages[j].content
+                : JSON.stringify(messages[j].content);
+              result = content.slice(0, 200);
+              break;
+            }
+          }
+
+          toolCalls.push({ name, args: args.slice(0, 150), result });
+        }
+      }
+    }
+
+    // Reverse toolCalls so they're in chronological order
+    toolCalls.reverse();
+
+    this.partialSuccess = {
+      toolCalls,
+      filesModified: [...new Set(filesModified)], // deduplicate
+      filesRead: [...new Set(filesRead)],
+      commandsRun: [...new Set(commandsRun)],
+      lastThought,
+      iterationCount,
+      restartCount,
+    };
+  }
+
+  /**
+   * Synthesizes a meaningful report from the message history when the orchestrator terminates
+   * without a proper final answer (e.g., iteration limit hit while the model was still making
+   * tool calls). This ensures the orchestrator NEVER returns an empty or meaningless string.
+   *
+   * The method first tries to call the LLM to generate a coherent summary of what was
+   * accomplished vs. left undone. If the LLM call fails or returns empty, it falls back to
+   * a mechanical reconstruction of tool calls and observations.
+   *
+   * The report includes:
+   * - What was accomplished (tools called, files changed, observations made)
+   * - What was left incomplete
+   * - The last thought/state of the model
+   * - The current health score and trend (e.g., "Health score: 0.8 (trending up)")
+   * - A fallback message if nothing useful can be extracted
+   */
+  private async synthesizeReport(
+    taskDescription: string,
+    messages: LlmMessage[],
+    currentFinalContent: string,
+    maxIterations: number,
+    restartCount: number
+  ): Promise<string> {
+    // If the model already produced a meaningful final answer (non-empty, not just a brief thought),
+    // use it as-is. A "meaningful" answer is one that's longer than a typical mid-task thought
+    // (e.g., "Reading file..." or "Step 1 thinking...") and doesn't end with "..." or "thinking..."
+    if (currentFinalContent && currentFinalContent.length > 30) {
+      const trimmed = currentFinalContent.trim();
+      if (!trimmed.endsWith("...") && !trimmed.endsWith("thinking...") && !trimmed.endsWith("working...")) {
+        return currentFinalContent;
+      }
+    }
+
+    // Extract tool calls and observations from the message history to build a summary
+    const toolActions: string[] = [];
+    const observations: string[] = [];
+    let lastThought = "";
+
+    for (const msg of messages) {
+      if (msg.role === "assistant" && msg.content) {
+        lastThought = msg.content;
+      }
+      if (msg.role === "assistant" && msg.tool_calls) {
+        for (const tc of msg.tool_calls) {
+          try {
+            const args = JSON.parse(tc.function.arguments);
+            const argSummary = Object.keys(args).length > 0
+              ? `(${Object.entries(args).map(([k, v]) => `${k}=${String(v).slice(0, 60)}`).join(", ")})`
+              : "";
+            toolActions.push(`${tc.function.name} ${argSummary}`);
+          } catch {
+            toolActions.push(tc.function.name);
+          }
+        }
+      }
+      if (msg.role === "tool" && msg.content) {
+        const content = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+        observations.push(content.slice(0, 200));
+      }
+    }
+
+    // CA1 (P0): Make callLlmForSummary() the PRIMARY path for summary generation.
+    // Pass the FULL message history (untruncated) so the LLM has rich context for
+    // generating a structured report covering what was accomplished, left undone,
+    // key decisions, and blockers encountered.
+    //
+    // The cost of one extra LLM call at the end of a task is negligible compared
+    // to the cost of the main ReAct loop. Only fall back to mechanical reconstruction
+    // if the LLM call fails or returns empty.
+    try {
+      const llmSummary = await this.callLlmForSummary(
+        taskDescription,
+        messages, // pass full message history — no truncation
+        maxIterations,
+        restartCount
+      );
+      if (llmSummary && llmSummary.length > 10) {
+        return llmSummary;
+      }
+    } catch {
+      // LLM call failed — fall through to mechanical fallback
+    }
+
+    // Mechanical fallback: build a structured report from extracted data
+    const parts: string[] = [];
+
+    // Include health score and trend in the opening line
+    const hs = this.memory.healthScore;
+    const healthLine = `Health score: ${hs.current.toFixed(1)} (trending ${hs.trend}) — ${Math.round(hs.current * 100)}% of goal achieved`;
+    parts.push(`Task stopped: hit the ${maxIterations}-iteration limit${restartCount > 0 ? ` after ${restartCount} restart(s)` : ""} without reaching a final answer.`);
+    parts.push(`\n${healthLine}.`);
+
+    if (toolActions.length > 0) {
+      parts.push(`\n## What was done\n\nThe following ${toolActions.length} tool call(s) were made:\n${toolActions.map((a) => `- ${a}`).join("\n")}`);
+    }
+
+    if (lastThought) {
+      parts.push(`\n## Last model thought\n\n${lastThought.slice(0, 500)}`);
+    }
+
+    if (observations.length > 0) {
+      parts.push(`\n## Key observations\n\n${observations.slice(-3).map((o) => `- ${o}`).join("\n")}`);
+    }
+
+    parts.push(`\n## Next steps\n\nPartial progress may exist in the workspace. Check task_history_tool or the workspace files directly to see what was accomplished before continuing.`);
+
+    return parts.join("\n");
+  }
+
+  /**
+   * Calls the LLM to generate a structured report of what was accomplished vs. left undone
+   * during a ReAct loop that hit the iteration limit. The report covers four sections:
+   *
+   * 1. **What was accomplished** — concrete actions taken (files read, files changed,
+   *    commands run, tests executed, tool calls made)
+   * 2. **What was left undone** — what the task still needs that wasn't completed
+   * 3. **Key decisions made** — important choices or trade-offs made during execution
+   * 4. **Blockers encountered** — errors, unexpected results, or obstacles that prevented
+   *    further progress
+   *
+   * Returns the LLM's report text, or an empty string if the call fails.
+   */
+  /**
+   * Calls the LLM to generate a structured report of what was accomplished vs. left undone
+   * during a ReAct loop that hit the iteration limit.
+   *
+   * CA1+CA3 (P0): This is now the PRIMARY path for summary generation (not a fallback).
+   * The FULL message history is passed without truncation so the LLM has maximum context
+   * for generating a coherent summary. The cost of one extra LLM call at the end of a task
+   * is negligible compared to the cost of the main ReAct loop.
+   *
+   * The report covers four sections:
+   * 1. **What was accomplished** — concrete actions taken
+   * 2. **What was left undone** — what the task still needs
+   * 3. **Key decisions made** — important choices or trade-offs
+   * 4. **Blockers encountered** — errors, unexpected results, or obstacles
+   *
+   * Returns the LLM's report text, or an empty string if the call fails.
+   */
+  private async callLlmForSummary(
+    taskDescription: string,
+    messages: LlmMessage[],
+    maxIterations: number,
+    restartCount: number
+  ): Promise<string> {
+    // Build a full conversation transcript from the message history.
+    // CA3 (P0): No truncation — pass the full context so the LLM can generate
+    // a rich, accurate summary. We skip the system prompt (too verbose) but
+    // include everything else: user messages, assistant thoughts, tool calls,
+    // and observations in their entirety.
+    const transcriptParts: string[] = [];
+    for (const msg of messages) {
+      if (msg.role === "system") continue; // skip system prompt
+      if (msg.role === "user" && msg.content) {
+        transcriptParts.push(`[User] ${msg.content}`);
+      } else if (msg.role === "assistant" && msg.content) {
+        transcriptParts.push(`[Assistant] ${msg.content}`);
+        if (msg.tool_calls) {
+          for (const tc of msg.tool_calls) {
+            transcriptParts.push(`  → Tool call: ${tc.function.name}(${tc.function.arguments})`);
+          }
+        }
+      } else if (msg.role === "tool" && msg.content) {
+        const obs = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+        transcriptParts.push(`  [Observation] ${obs}`);
+      }
+    }
+    const conversationTranscript = transcriptParts.join("\n");
+
+    // Include health score and trend in the summary prompt
+    const hs = this.memory.healthScore;
+    const healthLine = `Health score: ${hs.current.toFixed(1)} (trending ${hs.trend}) — ${Math.round(hs.current * 100)}% of goal achieved`;
+
+    const summaryPrompt: LlmMessage[] = [
+      {
+        role: "system",
+        content: "You are a summarization assistant. Given a task description and the full conversation transcript of a ReAct loop that hit its iteration limit, produce a structured report with exactly four sections:\n\n## What was accomplished\nList the concrete actions taken: files read, files changed, commands run, tests executed, tool calls made. Be specific about what was done — reference actual file paths, command outputs, and results.\n\n## What was left undone\nDescribe what the task still needs that wasn't completed. Be honest about gaps.\n\n## Key decisions made\nNote any important choices or trade-offs made during execution — e.g., which approach was chosen, what was prioritized, what was deferred.\n\n## Blockers encountered\nList any errors, unexpected results, or obstacles that prevented further progress. If none were encountered, state \"No blockers encountered.\"\n\nBe factual and concise. Use bullet points for each section. Do not include the iteration limit details — those are already known.",
+      },
+      {
+        role: "user",
+        content: `Task: ${taskDescription}\n\n${healthLine}\n\nIterations: ${maxIterations}${restartCount > 0 ? ` across ${restartCount + 1} restart(s)` : ""}\n\nFull conversation transcript:\n${conversationTranscript}`,
+      },
+    ];
+
+    const response = await this.llm.complete(summaryPrompt);
+    this.addUsage(response.usage);
+    return response.content.trim();
+  }
+
+  /**
+   * Delegates a focused task to a fresh orchestrator instance with isolated message history.
+   * Returns a structured SubagentResult that includes the subagent's outcome status
+   * ("completed" or "iteration_limit"), its final summary, iteration count, and — when
+   * the iteration limit was hit — accumulated context (last thought, tool calls, observations)
+   * so the parent orchestrator can decide whether to continue, retry, or synthesize a
+   * partial report. The subagent NEVER terminates the parent just because it hit its own
+   * iteration limit.
+   */
+  private async runSubagent(argsJson: string): Promise<SubagentResult> {
     let task: string;
     try {
       task = JSON.parse(argsJson).task;
     } catch {
-      return { summary: "subagent_tool error: invalid arguments" };
+      return {
+        status: "completed",
+        summary: "subagent_tool error: invalid arguments",
+        iterationCount: 0,
+      };
     }
     const sub = new ReActOrchestrator(this.llm, this.telemetry, {
       ...this.opts,
@@ -477,7 +1083,58 @@ export class ReActOrchestrator {
     });
     const result = await sub.run(task, { skipPlanMode: true, isSubagent: true });
     this.absorbSubagentUsage(sub);
-    return { summary: result };
+
+    const subOutcome = sub.getLastOutcome();
+    const iterationCount = sub.getIterationCount();
+
+    if (subOutcome === "partial_success" || subOutcome === "iteration_limit") {
+      // The subagent hit the iteration limit. Extract accumulated context from its
+      // message history so the parent can make an informed decision about what to do next.
+      const subMessages = sub.getLastMessages();
+      const toolCalls: string[] = [];
+      const observations: string[] = [];
+      let lastThought = "";
+
+      for (const msg of subMessages) {
+        if (msg.role === "assistant" && msg.content) {
+          lastThought = msg.content;
+        }
+        if (msg.role === "assistant" && msg.tool_calls) {
+          for (const tc of msg.tool_calls) {
+            try {
+              const args = JSON.parse(tc.function.arguments);
+              const argSummary = Object.keys(args).length > 0
+                ? `(${Object.entries(args).map(([k, v]) => `${k}=${String(v).slice(0, 60)}`).join(", ")})`
+                : "";
+              toolCalls.push(`${tc.function.name} ${argSummary}`);
+            } catch {
+              toolCalls.push(tc.function.name);
+            }
+          }
+        }
+        if (msg.role === "tool" && msg.content) {
+          const content = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+          observations.push(content.slice(0, 200));
+        }
+      }
+
+      return {
+        status: "iteration_limit",
+        summary: result,
+        iterationCount,
+        partialOutput: {
+          lastThought,
+          toolCalls,
+          observations,
+        },
+      };
+    }
+
+    return {
+      status: "completed",
+      summary: result,
+      iterationCount,
+    };
   }
 
   /**
@@ -534,6 +1191,13 @@ export class ReActOrchestrator {
     const planMarkdown = await this.generatePlan(taskDescription);
     writeTodo(this.projectRoot, planMarkdown);
 
+    // auto mode takes highest priority — auto-approve without asking
+    if (this.opts.auto) {
+      console.log(`\n--- Plan (tasks/todo.md) ---\n${planMarkdown}`);
+      console.log("(auto mode — plan auto-approved)");
+      return true;
+    }
+
     const interactive = this.opts.interactive !== false; // default true
     if (!interactive) {
       // API context: auto-approve the plan. The caller (/chat endpoint) will return the plan
@@ -545,13 +1209,267 @@ export class ReActOrchestrator {
     }
 
     console.log(`\n--- Plan (tasks/todo.md) ---\n${planMarkdown}`);
+    console.log(
+      `${ANSI_GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${ANSI_RESET}`
+    );
     const rl = readline.createInterface({ input, output });
-    const answer = await rl.question("Proceed with this plan? (yes/no) ");
+    const answer = await rl.question(`${ANSI_GREEN}Proceed with this plan? (yes/no) ${ANSI_RESET}`);
     rl.close();
+    console.log(
+      `${ANSI_GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${ANSI_RESET}`
+    );
     return /^y(es)?$/i.test(answer.trim());
   }
 
+  /**
+   * Phase Planning: divides the task into multiple phases, each running as a sub-orchestrator
+   * with isolated ReAct memory. Results from completed phases are summarized and passed to the
+   * next phase. This reduces per-phase token footprint at the cost of losing cross-phase context
+   * continuity. See enhancement/planning.md.
+   *
+   * The phases are generated by the LLM (no tools) as a numbered list. Each phase is then
+   * executed sequentially. If a phase hits the iteration limit, the user is asked whether to
+   * continue (in interactive mode) or auto-continue (in non-interactive mode).
+   *
+   * After all phases complete, a task history entry is written (Item 1a). Per-phase reports
+   * are saved to tasks/[task_name]-phase-[N].md (Item 2a). A WBS file is generated and
+   * updated as phases complete (Item 5a/5b).
+   */
+  private async runPhasePlanning(taskDescription: string, skills: LoadedSkill[], runOpts: RunOptions): Promise<string> {
+    const skillContext = skills.length
+      ? `\n\nThe following specialized skills are relevant to this task — let their guidance shape the phases:\n\n${skills
+          .map((s) => `## ${s.header.name} (${s.header.role})\n${s.body}`)
+          .join("\n\n")}`
+      : "";
+
+    const phasePrompt: LlmMessage[] = [
+      {
+        role: "system",
+        content:
+          buildProtocolPrompt(this.projectRoot) +
+          "You are in Phase Planning Mode. Do not call any tools. " +
+          "Divide the task below into 2-5 sequential phases. Each phase should be a self-contained " +
+          "unit of work with its own goal. Phases are interdependent — each builds on the previous one. " +
+          "The goal is to keep each phase's memory footprint small by isolating context. " +
+          "Output each phase as a markdown heading (### Phase N: Title) followed by a brief description " +
+          "of what that phase accomplishes. No prose outside the phase descriptions." +
+          skillContext,
+      },
+      { role: "user", content: taskDescription },
+    ];
+
+    const spinner = new Spinner();
+    if (this.opts.consoleThoughts !== false) spinner.start("Dividing task into phases...");
+    const response = await this.llm.complete(phasePrompt);
+    if (this.opts.consoleThoughts !== false) spinner.stop();
+    this.addUsage(response.usage);
+
+    const phasesMarkdown = response.content.trim();
+    console.log(`\n--- Phase Plan ---\n${phasesMarkdown}\n`);
+
+    // Parse phases from the markdown output
+    const phaseRegex = /###\s*Phase\s+(\d+)[:\s]+(.+?)(?=\n###|\n*$)/gis;
+    const phases: { number: number; title: string; description: string }[] = [];
+    let match: RegExpExecArray | null;
+    while ((match = phaseRegex.exec(phasesMarkdown)) !== null) {
+      phases.push({
+        number: parseInt(match[1], 10),
+        title: match[2].trim(),
+        description: match[0].trim(),
+      });
+    }
+
+    // Derive a sanitized filename base from the task description
+    const sanitizedTaskName = taskDescription
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 60);
+    const tasksDir = path.join(this.projectRoot, "tasks");
+    fs.mkdirSync(tasksDir, { recursive: true });
+
+    // Item 5a: Generate WBS file from phase plan
+    const wbsPath = path.join(tasksDir, `${sanitizedTaskName}-wbs.md`);
+    const wbsLines = phases.map((p) => `- [ ] Phase ${p.number}: ${p.title}`);
+    const wbsContent = `# WBS: ${taskDescription}\n\n${wbsLines.join("\n")}\n`;
+    fs.writeFileSync(wbsPath, wbsContent, "utf-8");
+    console.log(`\n📋 WBS written to tasks/${sanitizedTaskName}-wbs.md\n`);
+
+    // If no phases were parsed, treat the whole thing as one phase
+    if (phases.length === 0) {
+      console.log("(No distinct phases identified — running as a single phase)");
+      const sub = new ReActOrchestrator(this.llm, this.telemetry, {
+        ...this.opts,
+        cwd: this.cwd,
+        projectRoot: this.projectRoot,
+        consoleIndent: (this.opts.consoleIndent ?? 0) + 1,
+        singlePhase: true, // prevent infinite recursion
+      });
+      const result = await sub.run(taskDescription, { ...runOpts, isSubagent: true });
+      this.absorbSubagentUsage(sub);
+      return result;
+    }
+
+    // Confirm phases with user in interactive mode
+    // auto mode takes highest priority — auto-approve without asking
+    if (this.opts.auto) {
+      console.log("(auto mode — phase plan auto-approved)");
+    } else {
+      const interactive = this.opts.interactive !== false;
+      if (interactive) {
+        console.log(
+          `${ANSI_GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${ANSI_RESET}`
+        );
+        const rl = readline.createInterface({ input, output });
+        const answer = await rl.question(`${ANSI_GREEN}Proceed with these phases? (yes/no) ${ANSI_RESET}`);
+        rl.close();
+        console.log(
+          `${ANSI_GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${ANSI_RESET}`
+        );
+        if (!/^y(es)?$/i.test(answer.trim())) {
+          console.log("Phase plan rejected. Stopping.");
+          this.lastOutcome = "plan_rejected";
+          return "(No changes were made — the phase plan was not approved before execution.)";
+        }
+      }
+    }
+
+    // Execute each phase sequentially, passing summaries forward
+    let accumulatedSummary = "";
+    const phaseStats: { phaseNumber: number; phaseTitle: string; tokens: number; iterations: number; reportPath: string }[] = [];
+
+    for (const phase of phases) {
+      const phaseTask = `Phase ${phase.number}: ${phase.title}\n\n${phase.description}\n\nContext from previous phases:\n${accumulatedSummary || "(none — this is the first phase)"}\n\nComplete this phase. Do not work on future phases — focus only on what this phase requires.`;
+
+      console.log(`\n=== Starting Phase ${phase.number}: ${phase.title} ===\n`);
+
+      const sub = new ReActOrchestrator(this.llm, this.telemetry, {
+        ...this.opts,
+        cwd: this.cwd,
+        projectRoot: this.projectRoot,
+        consoleIndent: (this.opts.consoleIndent ?? 0) + 1,
+        singlePhase: true, // prevent infinite recursion
+      });
+      const phaseResult = await sub.run(phaseTask, { ...runOpts, isSubagent: true });
+      this.absorbSubagentUsage(sub);
+
+      // Capture per-phase stats (Item 3a)
+      const phaseUsage = sub.getCumulativeUsage();
+      const phaseTokens = phaseUsage.totalTokens;
+      const phaseIterations = sub.getIterationCount();
+
+      // Item 2a: Write phase report to tasks/[task_name]-phase-[N].md
+      const phaseReportPath = path.join(tasksDir, `${sanitizedTaskName}-phase-${phase.number}.md`);
+      const phaseReportContent = `# Phase ${phase.number}: ${phase.title}\n\n**Task:** ${taskDescription}\n\n**Result:**\n\n${phaseResult}\n\n**Stats:**\n- Tokens: ${phaseTokens.toLocaleString()}\n- Iterations: ${phaseIterations}\n`;
+      fs.writeFileSync(phaseReportPath, phaseReportContent, "utf-8");
+      console.log(`📝 Phase report written to tasks/${sanitizedTaskName}-phase-${phase.number}.md`);
+
+      // Item 3b: Color-coded CLI output
+      reportPhaseStats(phase.number, phase.title, phaseTokens, phaseIterations, this.opts.consoleIndent ?? 0);
+
+      // Persist phase report to PostgreSQL (best-effort)
+      try {
+        const phaseReportStore = new PhaseReportStore();
+        await phaseReportStore.save({
+          taskId: sanitizedTaskName,
+          phaseNumber: phase.number,
+          phaseTitle: phase.title,
+          content: phaseResult,
+          tokens: phaseTokens,
+          iterations: phaseIterations,
+        });
+        await phaseReportStore.close();
+      } catch (err) {
+        console.warn("[PhaseReportStore] Failed to save phase report:", err instanceof Error ? err.message : String(err));
+      }
+
+      // Persist WBS entries to PostgreSQL (best-effort)
+      try {
+        const wbsStore = new WbsStore();
+        await wbsStore.saveBatch(
+          phases.map((p) => ({
+            taskId: sanitizedTaskName,
+            taskDescription: taskDescription,
+            phaseNumber: p.number,
+            phaseTitle: p.title,
+            status: (p.number <= phase.number ? "completed" : "pending") as "completed" | "pending",
+          }))
+        );
+        await wbsStore.close();
+      } catch (err) {
+        console.warn("[WbsStore] Failed to save WBS entries:", err instanceof Error ? err.message : String(err));
+      }
+
+      // Persist phase-level task history to PostgreSQL (best-effort)
+      try {
+        const taskHistoryStore = new TaskHistoryStore();
+        await taskHistoryStore.save({
+          task: `Phase ${phase.number}: ${phase.title}`,
+          summary: phaseResult,
+          iterations: phaseIterations,
+          totalTokens: phaseTokens,
+        });
+        await taskHistoryStore.close();
+      } catch (err) {
+        console.warn("[TaskHistoryStore] Failed to save phase history:", err instanceof Error ? err.message : String(err));
+      }
+
+      // Item 5b: Update WBS to mark this phase as done
+      const wbsContent = phases.map((p) => {
+        const checked = p.number <= phase.number ? "x" : " ";
+        return `- [${checked}] Phase ${p.number}: ${p.title}`;
+      }).join("\n");
+      fs.writeFileSync(wbsPath, `# WBS: ${taskDescription}\n\n${wbsContent}\n`, "utf-8");
+
+      // Summarize what this phase accomplished for the next phase
+      const summaryPrompt: LlmMessage[] = [
+        {
+          role: "system",
+          content: "Summarize the following phase result in 2-3 sentences. Focus on what was accomplished, what files were changed, and any important state that the next phase needs to know about. Be concise.",
+        },
+        { role: "user", content: `Phase ${phase.number}: ${phase.title}\n\nResult:\n${phaseResult}` },
+      ];
+
+      const summarySpinner = new Spinner();
+      if (this.opts.consoleThoughts !== false) summarySpinner.start("Summarizing phase...");
+      const summaryResponse = await this.llm.complete(summaryPrompt);
+      if (this.opts.consoleThoughts !== false) summarySpinner.stop();
+      this.addUsage(summaryResponse.usage);
+
+      const phaseSummary = summaryResponse.content.trim();
+      // Item 2b: Include phase report path in accumulated summary
+      accumulatedSummary += `\n### Phase ${phase.number}: ${phase.title}\n${phaseSummary}\n\n_Phase report: tasks/${sanitizedTaskName}-phase-${phase.number}.md_\n`;
+
+      phaseStats.push({
+        phaseNumber: phase.number,
+        phaseTitle: phase.title,
+        tokens: phaseTokens,
+        iterations: phaseIterations,
+        reportPath: `tasks/${sanitizedTaskName}-phase-${phase.number}.md`,
+      });
+
+      console.log(`\n=== Phase ${phase.number} Complete ===\n${phaseSummary}\n`);
+    }
+
+    // Build the final result with per-phase stats
+    const statsLines = phaseStats.map(
+      (s) => `- **Phase ${s.phaseNumber}: ${s.phaseTitle}** — ${s.tokens.toLocaleString()} tokens, ${s.iterations} iterations (report: ${s.reportPath})`
+    );
+    const finalResult = `Phase planning completed.\n\n## Summary\n\n${accumulatedSummary}\n\n## Per-Phase Stats\n\n${statsLines.join("\n")}\n\nAll ${phases.length} phases completed successfully.`;
+
+    // Item 1a: Save task report summary to task history
+    appendTaskHistory(this.projectRoot, {
+      task: taskDescription,
+      summary: finalResult,
+      iterations: phaseStats.reduce((sum, s) => sum + s.iterations, 0),
+      totalTokens: this.cumulativeUsage.totalTokens || undefined,
+    });
+
+    return finalResult;
+  }
+
   private async askContinue(taskDescription: string, maxIterations: number): Promise<boolean> {
+
     const interactive = this.opts.interactive !== false; // default true
     if (!interactive) {
       // API context: auto-continue rather than hanging on stdin
@@ -559,11 +1477,145 @@ export class ReActOrchestrator {
       return true;
     }
     const rl = readline.createInterface({ input, output });
+    console.log(
+      `\n${ANSI_GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${ANSI_RESET}`
+    );
+    console.log(
+      `${ANSI_GREEN}▶ ITERATION LIMIT REACHED — Continue?${ANSI_RESET}`
+    );
+    console.log(
+      `${ANSI_GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${ANSI_RESET}`
+    );
     const answer = await rl.question(
-      `\nIteration limit reached for maxIterations [${maxIterations}]: "${taskDescription}".\nContinue for another round? (yes/no) `
+      `\n${ANSI_GREEN}Iteration limit reached for maxIterations [${maxIterations}]: "${taskDescription}".\nContinue for another round? (yes/no) ${ANSI_RESET}`
+    );
+    rl.close();
+    console.log(
+      `${ANSI_GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${ANSI_RESET}`
+    );
+    return /^y(es)?$/i.test(answer.trim());
+  }
+
+  /**
+   * Prompts the user about whether to continue a subagent that hit the iteration limit.
+   * Shows the subagent's accumulated context (last thought, tool calls, observations) so
+   * the user can make an informed decision. Returns true to continue, false to stop and
+   * synthesize a partial report.
+   *
+   * In non-interactive mode (API context), auto-continues rather than hanging on stdin.
+   */
+  private async askContinueSubagent(
+    taskDescription: string,
+    iterationCount: number,
+    lastThought: string,
+    toolCalls: string[],
+    observations: string[]
+  ): Promise<boolean> {
+
+    const interactive = this.opts.interactive !== false; // default true
+    if (!interactive) {
+      console.log(`\nSubagent iteration limit reached (${iterationCount} iterations) — non-interactive mode, auto-continuing.`);
+      return true;
+    }
+    const rl = readline.createInterface({ input, output });
+    console.log(
+      `\n${ANSI_YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${ANSI_RESET}`
+    );
+    console.log(
+      `${ANSI_YELLOW}▶ SUBAGENT ITERATION LIMIT REACHED — Continue?${ANSI_RESET}`
+    );
+    console.log(
+      `${ANSI_YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${ANSI_RESET}`
+    );
+    console.log(`\nSubagent task: "${taskDescription}"`);
+    console.log(`Iterations completed: ${iterationCount}`);
+    if (lastThought) {
+      console.log(`\nLast thought: ${lastThought.slice(0, 300)}`);
+    }
+    if (toolCalls.length > 0) {
+      console.log(`\nTool calls made (${toolCalls.length}):`);
+      toolCalls.slice(-5).forEach((tc) => console.log(`  - ${tc}`));
+      if (toolCalls.length > 5) {
+        console.log(`  ... and ${toolCalls.length - 5} more`);
+      }
+    }
+    const answer = await rl.question(
+      `\n${ANSI_YELLOW}Continue the subagent for another round? (yes/no) ${ANSI_RESET}`
     );
     rl.close();
     return /^y(es)?$/i.test(answer.trim());
+  }
+
+  /**
+   * Synthesizes a partial completion report from a subagent's accumulated work when the
+   * user declines to continue after an iteration limit hit. This ensures the parent
+   * orchestrator gets useful information about what was accomplished, rather than an
+   * empty or generic fallback message.
+   *
+   * The method first tries to call the LLM to generate a structured report covering:
+   * what was accomplished, what was left undone, key decisions made, and blockers
+   * encountered. If the LLM call fails or returns empty, it falls back to a mechanical
+   * reconstruction of tool calls and observations.
+   *
+   * The report includes the subagent's health score and trend. If the health score is
+   * above the PARTIAL_SUCCESS_THRESHOLD (0.7), the report is prefixed with "partial
+   * success" messaging instead of a generic fallback, giving the parent orchestrator
+   * meaningful partial-completion data.
+   */
+  private async synthesizeSubagentPartialReport(
+    taskDescription: string,
+    iterationCount: number,
+    lastThought: string,
+    toolCalls: string[],
+    observations: string[],
+    messages?: LlmMessage[]
+  ): Promise<string> {
+    // Determine if this is a "partial success" based on health score threshold
+    const hs = this.memory.healthScore;
+    const isPartialSuccess = hs.current >= 0.7;
+    const healthLine = `Health score: ${hs.current.toFixed(1)} (trending ${hs.trend}) — ${Math.round(hs.current * 100)}% of goal achieved`;
+
+    // Try to call the LLM for a coherent summary first.
+    // Pass the full message history if available for richer context.
+    try {
+      const llmSummary = await this.callLlmForSummary(
+        taskDescription,
+        messages ?? [], // pass full message history — no truncation
+        iterationCount,
+        0
+      );
+      if (llmSummary && llmSummary.length > 10) {
+        // Prepend the health score line to the LLM-generated summary
+        return `${healthLine}\n\n${llmSummary}`;
+      }
+    } catch {
+      // LLM call failed — fall through to mechanical fallback
+    }
+
+    // Mechanical fallback: build a structured report from extracted data
+    const parts: string[] = [];
+
+    if (isPartialSuccess) {
+      parts.push(`Subagent stopped: partial success after ${iterationCount} iterations. ${healthLine}.`);
+    } else {
+      parts.push(`Subagent stopped: hit the iteration limit after ${iterationCount} iterations without reaching a final answer. ${healthLine}.`);
+    }
+
+    if (toolCalls.length > 0) {
+      parts.push(`\n## What was done\n\nThe following ${toolCalls.length} tool call(s) were made:\n${toolCalls.map((tc) => `- ${tc}`).join("\n")}`);
+    }
+
+    if (lastThought) {
+      parts.push(`\n## Last thought\n\n${lastThought.slice(0, 500)}`);
+    }
+
+    if (observations.length > 0) {
+      parts.push(`\n## Key observations\n\n${observations.slice(-3).map((o) => `- ${o}`).join("\n")}`);
+    }
+
+    parts.push(`\n## Next steps\n\nPartial progress was made. The parent orchestrator should continue with the information gathered so far.`);
+
+    return parts.join("\n");
   }
 }
 
@@ -627,7 +1679,16 @@ function buildSystemPrompt(skills: LoadedSkill[], cwd: string): string {
     "starts fresh. If the user says something like 'continue', 'keep going', 'what was the last " +
     "task', or otherwise references earlier work without restating what it was, call " +
     "task_history_tool (action='recent') before doing anything else to find out what that refers " +
-    "to. Don't guess or assume.";
+    "to. Don't guess or assume.\n\n" +
+    "### Health Score Awareness\n" +
+    "Your execution is tracked with a rolling health score (0-100) that measures whether your " +
+    "actions are making progress toward the goal. At each ReAct iteration, evaluate your progress. " +
+    "If your rolling health score drops below 40 (indicating repeated errors, duplicate actions, " +
+    "or stalled progress), propose actions that would increase it — such as re-reading the current " +
+    "state of files instead of assuming, trying a different approach, or verifying assumptions " +
+    "with a fresh tool call. After each tool call, the system automatically scores whether the " +
+    "action moved you closer to completion. Stay aware of this signal and adjust your strategy " +
+    "when the score indicates you're stuck.";
 
   const skillBlocks = skills.length
     ? `\n\nThe following specialized skill directives are loaded for this task — follow their Process/Strategies/Instructions/Planning/Experience guidance:\n\n${skills
