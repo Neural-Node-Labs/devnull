@@ -460,8 +460,7 @@ Both services have resource limits, healthchecks, and restart policies configure
 | Variable | Default | Description |
 |---|---|---|
 | `DEEPSEEK_API_KEY` | (required) | DeepSeek API key for LLM access |
-| `ADMIN_USERNAME` | `admin` | Admin username for login-based auth |
-| `ADMIN_PASSWORD` | (unset) | Admin password for login-based auth. If set, API requires login; if unset, API runs open-access |
+| (removed) | — | Static admin credentials removed. Auth is token-based. First user to register becomes admin. |
 | `DEVNULL_API_PORT` | `3001` | Port the API server listens on |
 | `DEVNULL_API_HOST` | `0.0.0.0` | Host the API server binds to |
 | `DEVNULL_HOME` | `/opt/devnull` | Fallback path for agent skills/config |

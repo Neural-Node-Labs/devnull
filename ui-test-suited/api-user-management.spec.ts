@@ -4,43 +4,51 @@ import { test, expect } from "@playwright/test";
  * API-level test for user management endpoints.
  * This validates the backend API directly, proving the user management
  * routes work correctly without requiring a UI frontend.
+ *
+ * Auth strategy: Register the first user via /api/v1/register, then use
+ * that token for all subsequent authenticated requests.
  */
 
 const API_BASE = "http://localhost:3001/api/v1";
 
-// Helper to get auth headers — probes the API to see if auth is needed
+// Helper to get auth headers — registers the first user if needed
 let _authToken: string | null = null;
 async function resolveApiToken(): Promise<Record<string, string>> {
   if (_authToken !== null) {
     return _authToken ? { Authorization: `Bearer ${_authToken}` } : {};
   }
 
-  // Check if ADMIN_PASSWORD is set and login
-  if (process.env.ADMIN_PASSWORD) {
-    try {
-      const response = await fetch(`${API_BASE}/login`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: "admin", password: process.env.ADMIN_PASSWORD }),
-      });
-      if (response.ok) {
-        const body = await response.json();
-        if (body.success && body.data?.token) {
-          _authToken = body.data.token;
-          return { Authorization: `Bearer ${_authToken}` };
-        }
+  // Try to register the first user (works when no users exist)
+  try {
+    const response = await fetch(`${API_BASE}/register`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "testadmin", password: "TestPass123!" }),
+    });
+    if (response.ok) {
+      const body = await response.json();
+      if (body.success && body.data?.token) {
+        _authToken = body.data.token;
+        return { Authorization: `Bearer ${_authToken}` };
       }
-    } catch {
-      // Server might not be running
     }
+  } catch {
+    // Server might not be running
   }
 
-  // Probe the health endpoint without auth
+  // If registration failed (users already exist), try login
   try {
-    const response = await fetch(`${API_BASE}/health`);
+    const response = await fetch(`${API_BASE}/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "testadmin", password: "TestPass123!" }),
+    });
     if (response.ok) {
-      _authToken = ""; // No auth needed
-      return {};
+      const body = await response.json();
+      if (body.success && body.data?.token) {
+        _authToken = body.data.token;
+        return { Authorization: `Bearer ${_authToken}` };
+      }
     }
   } catch {
     // Server might not be running
@@ -201,4 +209,3 @@ test.describe("API User Management", () => {
     }
   });
 });
-

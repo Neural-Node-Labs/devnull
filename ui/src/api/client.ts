@@ -123,13 +123,18 @@ export interface UsageInfo {
 /** Mirrors the CLI's flags — see src/cli/index.ts in devnull-core for the source of truth. */
 export interface ChatOptions {
   planMode?: "auto" | "always" | "never";
-  leanToken?: boolean;
+  /** When true, keeps every historical copy of read_tool file snapshots in context instead of
+   *  collapsing stale ones (lean-token compaction is the default). Default: false. */
+  fullContextToken?: boolean;
   isolatedWorkspace?: boolean;
   maxIterations?: number;
   projectId?: string;
   /** When true, the orchestrator auto-continues past the iteration limit instead of stopping.
    *  Used by the UI's "Continue" button when a limitation message is shown. */
   continueOnLimit?: boolean;
+  /** When true, enables phase-based planning: the task is divided into multiple phases, each
+   *  with isolated ReAct memory to reduce token footprint. Default: false. */
+  phasePlanning?: boolean;
 }
 
 export interface ChatResult {
@@ -194,6 +199,16 @@ export const api = {
     return request<LoginResponse>("POST", "/login", { username, password });
   },
 
+  /** Register the first user (only works when no users exist). Returns token + user info. */
+  async register(username: string, password: string): Promise<ApiResponse<LoginResponse>> {
+    return request<LoginResponse>("POST", "/register", { username, password });
+  },
+
+  /** Check how many users exist (no auth required). */
+  async getUserCount(): Promise<ApiResponse<{ count: number }>> {
+    return request<{ count: number }>("GET", "/users/count");
+  },
+
   /** Check API health. */
   async health(): Promise<ApiResponse<HealthResponse>> {
     return request<HealthResponse>("GET", "/health");
@@ -219,7 +234,7 @@ export const api = {
     return request<User>("DELETE", `/users/${id}`);
   },
 
-  /** Send a chat message. Accepts the same options the CLI exposes as flags (leanToken,
+  /** Send a chat message. Accepts the same options the CLI exposes as flags (fullContextToken,
    *  isolatedWorkspace, maxIterations, projectId) in addition to planMode. */
   async chat(task: string, opts: ChatOptions = {}, signal?: AbortSignal): Promise<ApiResponse<ChatResult>> {
     return request<ChatResult>("POST", "/chat", { task, ...opts }, signal);

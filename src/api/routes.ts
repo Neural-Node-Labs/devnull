@@ -7,7 +7,7 @@ import { DeepSeekClient } from "../llm/deepseekClient.js";
 import { FileTelemetry } from "../telemetry/logger.js";
 import { loadLlmConfig } from "../config/loadConfig.js";
 import { SkillRegistry } from "../core/skillRegistry.js";
-import { authMiddleware, verifyLogin, generateToken, revokeToken, isAuthEnabled } from "./auth.js";
+import { authMiddleware, verifyLogin, generateToken, revokeToken, setUserStore, getUserStore, hashPassword, StoredUser } from "./auth.js";
 import { registerProjectRoutes } from "./projectRoutes.js";
 import { registerPlanRoutes } from "./planRoutes.js";
 import { listProjects, getProject } from "./projectStore.js";
@@ -81,8 +81,8 @@ export function createRouter(): Router {
       return;
     }
 
-    const token = generateToken(verifiedUser, "admin");
-    const data: LoginResponse = { token, username: verifiedUser, role: "admin" };
+    const token = generateToken(verifiedUser.username, verifiedUser.role);
+    const data: LoginResponse = { token, username: verifiedUser.username, role: verifiedUser.role };
     const body: ApiResponse<LoginResponse> = { success: true, data };
     res.json(body);
   });
@@ -127,7 +127,7 @@ export function createRouter(): Router {
 
   // ─── Chat / Task Execution ─────────────────────────────────────────────
   router.post("/chat", async (req: Request, res: Response) => {
-    const { task, planMode, leanToken, projectId, maxIterations, isolatedWorkspace, continueOnLimit } = req.body as ChatRequest;
+    const { task, planMode, fullContextToken, projectId, maxIterations, isolatedWorkspace, continueOnLimit, phasePlanning } = req.body as ChatRequest;
 
     if (!task || typeof task !== "string" || task.trim().length === 0) {
       const body: ApiResponse = { success: false, error: "Missing or empty 'task' field" };
@@ -157,10 +157,11 @@ export function createRouter(): Router {
       onIterationLimitReached: async () => false,
     };
     if (planMode) opts.planMode = planMode;
-    if (leanToken) opts.leanToken = true;
+    if (fullContextToken) opts.fullContextToken = true;
     if (maxIterations) opts.maxIterations = maxIterations;
     if (isolatedWorkspace) opts.isolatedWorkspace = true;
     if (continueOnLimit) opts.continueOnLimit = true;
+    if (phasePlanning) opts.phasePlanning = true;
 
     const orchestrator = new ReActOrchestrator(llm, telemetry, opts);
 
@@ -182,11 +183,12 @@ export function createRouter(): Router {
           task: task.trim(),
           plan,
           planMode: planMode ?? "always",
-          leanToken: leanToken ?? false,
+          fullContextToken: fullContextToken ?? false,
           projectId,
           maxIterations,
           isolatedWorkspace: isolatedWorkspace ?? false,
           continueOnLimit: continueOnLimit ?? false,
+          phasePlanning: phasePlanning ?? false,
           createdAt: Date.now(),
         });
       }
@@ -224,7 +226,7 @@ export function createRouter(): Router {
     task: string;
     plan: string;
     planMode: "auto" | "always" | "never";
-    leanToken: boolean;
+    fullContextToken: boolean;
     projectId?: string;
     maxIterations?: number;
     isolatedWorkspace: boolean;
@@ -235,7 +237,7 @@ export function createRouter(): Router {
 
   // ─── Plan Generation (no execution) ────────────────────────────────────
   router.post("/chat/plan", async (req: Request, res: Response) => {
-    const { task, planMode, leanToken, projectId, maxIterations, isolatedWorkspace, continueOnLimit } = req.body as PlanRequest;
+    const { task, planMode, fullContextToken, projectId, maxIterations, isolatedWorkspace, continueOnLimit, phasePlanning } = req.body as PlanRequest;
 
     if (!task || typeof task !== "string" || task.trim().length === 0) {
       const body: ApiResponse = { success: false, error: "Missing or empty 'task' field" };
@@ -254,9 +256,10 @@ export function createRouter(): Router {
     const llm = new DeepSeekClient(llmConfig, telemetry);
 
     const opts: OrchestratorOptions = { cwd, planMode: planMode ?? "always" };
-    if (leanToken) opts.leanToken = true;
+    if (fullContextToken) opts.fullContextToken = true;
     if (maxIterations) opts.maxIterations = maxIterations;
     if (isolatedWorkspace) opts.isolatedWorkspace = true;
+    if (phasePlanning) opts.phasePlanning = true;
     const orchestrator = new ReActOrchestrator(llm, telemetry, opts);
 
     try {
@@ -266,11 +269,12 @@ export function createRouter(): Router {
         task: task.trim(),
         plan,
         planMode: planMode ?? "always",
-        leanToken: leanToken ?? false,
+        fullContextToken: fullContextToken ?? false,
         projectId,
         maxIterations,
         isolatedWorkspace: isolatedWorkspace ?? false,
         continueOnLimit: continueOnLimit ?? false,
+        phasePlanning: phasePlanning ?? false,
         createdAt: Date.now(),
       });
 
@@ -321,10 +325,11 @@ export function createRouter(): Router {
       interactive: false,
       onIterationLimitReached: async () => false,
     };
-    if (session.leanToken) opts.leanToken = true;
+    if (session.fullContextToken) opts.fullContextToken = true;
     if (session.maxIterations) opts.maxIterations = session.maxIterations;
     if (session.isolatedWorkspace) opts.isolatedWorkspace = true;
     if (session.continueOnLimit) opts.continueOnLimit = true;
+    if (session.phasePlanning) opts.phasePlanning = true;
     const orchestrator = new ReActOrchestrator(llm, telemetry, opts);
 
     try {
@@ -463,21 +468,71 @@ export function createRouter(): Router {
   });
 
   // ─── User Management ───────────────────────────────────────────────────
-  // In-memory user store (for demo/testing purposes)
-  const users: User[] = [
-    {
-      id: "1",
-      username: "admin",
+  // Persistent user store with password hashing (in-memory for now, but structured for DB migration)
+  const storedUsers: StoredUser[] = [];
+  let nextUserId = 1;
+
+  // Initialize the auth module's reference to our user store
+  setUserStore(storedUsers);
+
+  // ─── Register (no auth required — only works when no users exist) ──────
+  router.post("/register", (req: Request, res: Response) => {
+    const { username, password } = req.body as CreateUserRequest;
+
+    // Validate inputs first (before checking user count, so validation errors return 400 not 403)
+    if (!username || typeof username !== "string" || username.trim().length === 0) {
+      const body: ApiResponse = { success: false, error: "Missing or empty 'username' field" };
+      res.status(400).json(body);
+      return;
+    }
+
+    if (!password || typeof password !== "string" || password.trim().length === 0) {
+      const body: ApiResponse = { success: false, error: "Missing or empty 'password' field" };
+      res.status(400).json(body);
+      return;
+    }
+
+    if (password.length < 4) {
+      const body: ApiResponse = { success: false, error: "Password must be at least 4 characters" };
+      res.status(400).json(body);
+      return;
+    }
+
+    // Only allow registration when no users exist
+    if (storedUsers.length > 0) {
+      const body: ApiResponse = { success: false, error: "Registration is closed. Users can only be added by an admin." };
+      res.status(403).json(body);
+      return;
+    }
+
+    // First user becomes admin
+    const newUser: StoredUser = {
+      id: String(nextUserId++),
+      username: username.trim(),
+      passwordHash: hashPassword(password),
       role: "admin",
       createdAt: new Date().toISOString(),
-    },
-  ];
-  let nextUserId = 2;
+    };
+
+    storedUsers.push(newUser);
+
+    // Auto-login after registration
+    const token = generateToken(newUser.username, newUser.role);
+    const data: LoginResponse = { token, username: newUser.username, role: newUser.role };
+    const body: ApiResponse<LoginResponse> = { success: true, data };
+    res.status(201).json(body);
+  });
+
+  // ─── User count (no auth required — used by UI to check if registration is needed) ──
+  router.get("/users/count", (_req: Request, res: Response) => {
+    const body: ApiResponse<{ count: number }> = { success: true, data: { count: storedUsers.length } };
+    res.json(body);
+  });
 
   // List all users
   router.get("/users", (_req: Request, res: Response) => {
-    // Return users without passwords
-    const safeUsers = users.map(({ id, username, role, createdAt }) => ({
+    // Return users without password hashes
+    const safeUsers: User[] = storedUsers.map(({ id, username, role, createdAt }) => ({
       id,
       username,
       role,
@@ -487,7 +542,7 @@ export function createRouter(): Router {
     res.json(body);
   });
 
-  // Create a new user
+  // Create a new user (admin only — protected by authMiddleware)
   router.post("/users", (req: Request, res: Response) => {
     const { username, password, role } = req.body as CreateUserRequest;
 
@@ -504,22 +559,29 @@ export function createRouter(): Router {
     }
 
     // Check for duplicate username
-    if (users.some((u) => u.username === username.trim())) {
+    if (storedUsers.some((u) => u.username === username.trim())) {
       const body: ApiResponse = { success: false, error: "Username already exists" };
       res.status(409).json(body);
       return;
     }
 
-    const newUser: User = {
+    const newUser: StoredUser = {
       id: String(nextUserId++),
       username: username.trim(),
+      passwordHash: hashPassword(password),
       role: role === "admin" ? "admin" : "user",
       createdAt: new Date().toISOString(),
     };
 
-    users.push(newUser);
+    storedUsers.push(newUser);
 
-    const body: ApiResponse<User> = { success: true, data: newUser };
+    const safeUser: User = {
+      id: newUser.id,
+      username: newUser.username,
+      role: newUser.role,
+      createdAt: newUser.createdAt,
+    };
+    const body: ApiResponse<User> = { success: true, data: safeUser };
     res.status(201).json(body);
   });
 
@@ -527,7 +589,7 @@ export function createRouter(): Router {
   router.put("/users/:id", (req: Request, res: Response) => {
     const { id } = req.params;
     const updates = req.body as UpdateUserRequest;
-    const user = users.find((u) => u.id === id);
+    const user = storedUsers.find((u) => u.id === id);
 
     if (!user) {
       const body: ApiResponse = { success: false, error: "User not found" };
@@ -552,7 +614,7 @@ export function createRouter(): Router {
   // Delete a user
   router.delete("/users/:id", (req: Request, res: Response) => {
     const { id } = req.params;
-    const index = users.findIndex((u) => u.id === id);
+    const index = storedUsers.findIndex((u) => u.id === id);
 
     if (index === -1) {
       const body: ApiResponse = { success: false, error: "User not found" };
@@ -561,13 +623,13 @@ export function createRouter(): Router {
     }
 
     // Prevent deleting the last admin
-    if (users[index].role === "admin" && users.filter((u) => u.role === "admin").length <= 1) {
+    if (storedUsers[index].role === "admin" && storedUsers.filter((u) => u.role === "admin").length <= 1) {
       const body: ApiResponse = { success: false, error: "Cannot delete the last admin user" };
       res.status(403).json(body);
       return;
     }
 
-    const deleted = users.splice(index, 1)[0];
+    const deleted = storedUsers.splice(index, 1)[0];
     const body: ApiResponse<User> = {
       success: true,
       data: { id: deleted.id, username: deleted.username, role: deleted.role, createdAt: deleted.createdAt },

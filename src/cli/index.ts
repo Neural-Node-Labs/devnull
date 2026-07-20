@@ -13,6 +13,7 @@ import { auditReactLoop } from "../core/reactAuditor.js";
 import { runLiveDiagnostics } from "../core/liveDiagnostics.js";
 import { startApiServer } from "../api/server.js";
 import { dockerComposeUp } from "../tools/dockerComposeDeployTool.js";
+import { deployWorkspaceViaSsh } from "../tools/dockerDeploySshTool.js";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -20,6 +21,7 @@ const program = new Command();
 program.name("devnull").description("devnull — ReAct CLI agent with hot-pluggable role skills").version("0.1.0");
 
 program
+  .argument("[task]", "task description — equivalent to --task <description>")
   .option("--chat", "enter interactive chat mode (workspace = current folder)")
   .option("--task <description>", "execute a single task, asking for clarification if needed")
   .option("--index", "index the current workspace into .agent/index/")
@@ -27,7 +29,8 @@ program
   .option("--lesson <text>", "record a lesson to tasks/lessons.md (see devnull.md Self-Improvement Loop)")
   .option("--plan", "force Plan Mode on, regardless of task complexity heuristic")
   .option("--no-plan", "force Plan Mode off, regardless of task complexity heuristic")
-  .option("--lean-token", "collapse stale/superseded read_tool file snapshots in context instead of keeping every historical copy (see src/core/contextCompaction.ts); default: off, full history is kept")
+  .option("--full-context-token", "keep every historical copy of read_tool file snapshots in context instead of collapsing stale ones (see src/core/contextCompaction.ts); default: off, lean-token compaction is on")
+  .option("--phase-planning", "enable phase-based planning: divide work into multiple phases, each with isolated ReAct memory to reduce token footprint (see enhancement/planning.md); default: off")
   .option("--isolated-workspace", "run tool operations against an isolated ./workspace-agent copy instead of the live project files (see src/core/workspaceManager.ts); default: off")
   .option("--audit-react", "run the built-in bug-fixing scenario battery through the real orchestrator and report on how it performed")
   .option("--audit-out <path>", "where to write the audit report markdown (default: reports/react-audit-<timestamp>.md)")
@@ -39,10 +42,15 @@ program
   .option("--deploy", "trigger deploy mode — runs docker compose up -d --build")
   .option("--docker", "use docker compose for deployment (implied by --deploy)")
   .option("--llm <boolean>", "if true, send the deploy task to the LLM as a devops task; if false, execute directly (default: false)", (v) => v === "true" || v === "1")
-  .action(async (opts) => {
+  .option("--remote <ip>", "remote host IP to deploy to (uses REMOTE_SSH_USER and REMOTE_SSH_PASSWORD from .env)")
+  .option("--remote-path <path>", "remote directory path for deployment (default: /opt/devnull)")
+  .action(async (taskArg, opts, cmd) => {
     const cwd = process.cwd();
     const telemetry = new FileTelemetry(cwd);
     const llmConfig = loadLlmConfig();
+
+    // Merge positional [task] with --task: positional takes precedence if both are given
+    const task = taskArg ?? opts.task;
 
     if (opts.index) {
       const result = await buildIndex(cwd);
@@ -105,15 +113,71 @@ program
     }
 
     // ─── Deploy Mode ────────────────────────────────────────────────────────
-    // Usage: devnull --deploy --docker --llm true|false
+    // Usage:
+    //   Local:  devnull --deploy --docker --llm true|false
+    //   Remote: devnull --deploy --docker --remote <ip> [--llm true|false]
+    //
     //   --llm true  → send the deploy task to the LLM as a devops task (resolves issues)
-    //   --llm false → execute docker compose up -d --build directly
+    //   --llm false → execute deploy directly
+    //   --remote <ip> → deploy to remote host using REMOTE_SSH_USER and REMOTE_SSH_PASSWORD from .env
     if (opts.deploy || opts.docker) {
       const useLlm = opts.llm === true;
+      const remoteHost = opts.remote as string | undefined;
 
-      if (useLlm) {
-        // Send to LLM as a devops deployment task — the LLM will use the
-        // docker_compose_deploy_tool and resolve any issues it encounters.
+      if (remoteHost) {
+        // ── Remote Deploy ────────────────────────────────────────────────
+        const remoteUser = (process.env.REMOTE_SSH_USER || "").trim();
+        const remotePassword = process.env.REMOTE_SSH_PASSWORD;
+        const remotePath = (opts.remotePath as string) || "/opt/devnull";
+
+        if (!remoteUser || !remotePassword) {
+          console.error("❌ REMOTE_SSH_USER and REMOTE_SSH_PASSWORD must be set in .env for remote deployment.");
+          process.exit(1);
+        }
+
+        if (useLlm) {
+          // Send to LLM with remote deploy context
+          const llm = new DeepSeekClient(llmConfig, telemetry);
+          const orchestrator = new ReActOrchestrator(llm, telemetry, {
+            cwd,
+            planMode: "always",
+          });
+          console.log(`🚀 Remote deploy mode: sending to LLM as devops task (target: ${remoteHost})...\n`);
+          await orchestrator.run(
+            `Deploy the devnull stack to remote host ${remoteHost} via SSH. ` +
+            `Use the docker_deploy_ssh_tool with host="${remoteHost}", user="${remoteUser}", ` +
+            `passwordEnvVar="REMOTE_SSH_PASSWORD", remotePath="${remotePath}". ` +
+            `If the build or deployment fails, diagnose and fix any issues. ` +
+            `Verify all containers are healthy after deployment. ` +
+            `Act as a DevOps engineer — resolve any issues you find.`
+          );
+        } else {
+          // Direct remote execution — no LLM involvement
+          console.log(`🚀 Remote deploy mode: deploying to ${remoteHost}...\n`);
+          const result = await deployWorkspaceViaSsh({
+            host: remoteHost,
+            user: remoteUser,
+            password: remotePassword,
+            remotePath,
+          }, cwd);
+
+          if (result.success) {
+            console.log(`✅ Remote deploy to ${remoteHost} succeeded.\n`);
+            console.log(`  Services: ${result.services.length} running`);
+            for (const svc of result.services) {
+              console.log(`    - ${svc.name}: ${svc.status} (${svc.health || "no health check"})`);
+            }
+          } else {
+            console.error(`❌ Remote deploy to ${remoteHost} failed.\n`);
+            console.error(`  Summary: ${result.summary}`);
+            if (result.dockerCommandResult.stderr) {
+              console.error(`  Docker stderr: ${result.dockerCommandResult.stderr}`);
+            }
+            process.exit(1);
+          }
+        }
+      } else if (useLlm) {
+        // ── Local Deploy via LLM ─────────────────────────────────────────
         const llm = new DeepSeekClient(llmConfig, telemetry);
         const orchestrator = new ReActOrchestrator(llm, telemetry, {
           cwd,
@@ -128,7 +192,7 @@ program
           "Act as a DevOps engineer — resolve any issues you find."
         );
       } else {
-        // Direct execution — no LLM involvement
+        // ── Local Direct Deploy ──────────────────────────────────────────
         console.log("🚀 Deploy mode: executing docker compose up -d --build directly...\n");
         const result = await dockerComposeUp(undefined, cwd);
         if (result.exitCode === 0) {
@@ -147,14 +211,15 @@ program
     const orchestratorOpts: OrchestratorOptions = { cwd, maxIterations };
     if (opts.plan === true) orchestratorOpts.planMode = "always";
     if (opts.plan === false) orchestratorOpts.planMode = "never";
-    if (opts.leanToken) orchestratorOpts.leanToken = true;
+    if (opts.fullContextToken) orchestratorOpts.fullContextToken = true;
     if (opts.isolatedWorkspace) orchestratorOpts.isolatedWorkspace = true;
+    if (opts.phasePlanning) orchestratorOpts.phasePlanning = true;
 
     const llm = new DeepSeekClient(llmConfig, telemetry);
     const orchestrator = new ReActOrchestrator(llm, telemetry, orchestratorOpts);
 
-    if (opts.task) {
-      await orchestrator.run(opts.task);
+    if (task) {
+      await orchestrator.run(task);
       return;
     }
 

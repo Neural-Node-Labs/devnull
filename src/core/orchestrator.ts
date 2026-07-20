@@ -55,12 +55,19 @@ export interface OrchestratorOptions {
   /** Internal — nesting depth used to indent subagent console output. Do not set directly. */
   consoleIndent?: number;
   /**
-   * When true, collapses stale/superseded read_tool Observations (earlier full-file snapshots
-   * of a path that's since been re-read or edited) down to a short placeholder instead of
-   * keeping every historical copy in context — see src/core/contextCompaction.ts for exactly
-   * what is and isn't touched, and why. Default: false — existing full-history behavior.
+   * When true (default), collapses stale/superseded read_tool Observations (earlier full-file
+   * snapshots of a path that's since been re-read or edited) down to a short placeholder
+   * instead of keeping every historical copy in context — see src/core/contextCompaction.ts
+   * for exactly what is and isn't touched, and why. Set fullContextToken to true to keep the
+   * full history (the old default behavior).
    */
   leanToken?: boolean;
+  /**
+   * When true, keeps every historical copy of read_tool file snapshots in context instead of
+   * collapsing stale/superseded ones (the default lean-token behavior). Set this to opt out
+   * of context compaction and preserve the full read history. Default: false.
+   */
+  fullContextToken?: boolean;
   /**
    * When true (default), scores each tool step heuristically (see stepScorer.ts) and, if the
    * rolling average drops low, injects a one-time nudge into context asking the model to
@@ -79,6 +86,14 @@ export interface OrchestratorOptions {
   /** Internal — lets subagents inherit the real project root for protocol/history/todo even
    *  when their `cwd` points at an already-isolated workspace-agent copy. Do not set directly. */
   projectRoot?: string;
+  /**
+   * When true, enables phase-based planning: the task is divided into multiple phases, each
+   * running as a sub-orchestrator with isolated ReAct memory. Results from completed phases
+   * are summarized and passed to the next phase. This reduces per-phase token footprint at
+   * the cost of losing cross-phase context continuity. See enhancement/planning.md.
+   * Default: false.
+   */
+  phasePlanning?: boolean;
 }
 
 export interface RunOptions {
@@ -411,10 +426,11 @@ export class ReActOrchestrator {
           content: JSON.stringify(result.observation),
         });
 
-        // Lean token mode: a fresh read_tool or write_edit_tool observation for a path makes
-        // any earlier read_tool observation of that same path stale — collapse it. Only runs
-        // when explicitly opted in; see contextCompaction.ts for exactly what this does.
-        if (this.opts.leanToken && (result.toolName === "read_tool" || result.toolName === "write_edit_tool")) {
+        // Context compaction (lean-token mode, default ON): a fresh read_tool or write_edit_tool
+        // observation for a path makes any earlier read_tool observation of that same path stale
+        // — collapse it. Set fullContextToken to true to keep the full history instead.
+        // See contextCompaction.ts for exactly what this does.
+        if (!this.opts.fullContextToken && (result.toolName === "read_tool" || result.toolName === "write_edit_tool")) {
           const args = step.action?.input as { filePath?: string } | undefined;
           if (args?.filePath) {
             compactStaleFileReads(messages, args.filePath, result.toolCallId);

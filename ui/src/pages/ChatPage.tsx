@@ -16,7 +16,7 @@ interface PersistedChatState {
   messages: ChatMessage[];
   input: string;
   planMode: "auto" | "always" | "never";
-  leanToken: boolean;
+  fullContextToken: boolean;
   isolatedWorkspace: boolean;
   maxIterations: number | "";
   showAdvanced: boolean;
@@ -73,7 +73,7 @@ export function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>(savedState?.messages ?? []);
   const [input, setInput] = useState(initialInput);
   const [planMode, setPlanMode] = useState<"auto" | "always" | "never">(savedState?.planMode ?? "always");
-  const [leanToken, setLeanToken] = useState(savedState?.leanToken ?? false);
+  const [fullContextToken, setFullContextToken] = useState(savedState?.fullContextToken ?? false);
   const [isolatedWorkspace, setIsolatedWorkspace] = useState(savedState?.isolatedWorkspace ?? false);
   const [maxIterations, setMaxIterations] = useState<number | "">(savedState?.maxIterations ?? "");
   const [showAdvanced, setShowAdvanced] = useState(savedState?.showAdvanced ?? false);
@@ -95,7 +95,7 @@ export function ChatPage() {
       messages,
       input,
       planMode,
-      leanToken,
+      fullContextToken,
       isolatedWorkspace,
       maxIterations,
       showAdvanced,
@@ -103,7 +103,7 @@ export function ChatPage() {
       sessionId,
       lastTaskText,
     });
-  }, [messages, input, planMode, leanToken, isolatedWorkspace, maxIterations, showAdvanced, currentPlan, sessionId, lastTaskText]);
+  }, [messages, input, planMode, fullContextToken, isolatedWorkspace, maxIterations, showAdvanced, currentPlan, sessionId, lastTaskText]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -124,7 +124,7 @@ export function ChatPage() {
 
   const buildOptions = (): ChatOptions => {
     const opts: ChatOptions = { planMode };
-    if (leanToken) opts.leanToken = true;
+    if (fullContextToken) opts.fullContextToken = true;
     if (isolatedWorkspace) opts.isolatedWorkspace = true;
     if (maxIterations !== "" && maxIterations > 0) opts.maxIterations = maxIterations;
     return opts;
@@ -512,8 +512,8 @@ export function ChatPage() {
         {showAdvanced && (
           <div style={{ display: "flex", gap: "16px", alignItems: "center", flexWrap: "wrap", padding: "12px", marginBottom: "12px", background: "var(--color-bg-secondary)", borderRadius: "6px" }}>
             <label style={checkboxLabel}>
-              <input type="checkbox" checked={leanToken} onChange={(e) => setLeanToken(e.target.checked)} />
-              Lean token mode
+              <input type="checkbox" checked={fullContextToken} onChange={(e) => setFullContextToken(e.target.checked)} />
+              Full context mode
             </label>
             <label style={checkboxLabel}>
               <input type="checkbox" checked={isolatedWorkspace} onChange={(e) => setIsolatedWorkspace(e.target.checked)} />

@@ -363,10 +363,8 @@ export function SettingsPage() {
       <div style={sectionStyle}>
         <h2 style={sectionTitle}>Change Password</h2>
         <p style={{ color: "var(--color-warning, #f59e0b)", fontSize: "13px", marginBottom: "12px" }}>
-          ⚠ Not yet available. This server currently authenticates against a single admin
-          credential set via the <code>ADMIN_PASSWORD</code> environment variable — there's no
-          per-user password storage on the backend yet. Changing it here would silently do
-          nothing, so this form is disabled rather than pretending it worked.
+          ⚠ Not yet available. Password change is not yet implemented on the backend.
+          This form is disabled rather than pretending it worked.
         </p>
         <div style={{ display: "flex", flexDirection: "column", gap: "12px", maxWidth: "400px", opacity: 0.5 }}>
           <input type="password" placeholder="Current password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} style={inputStyle} aria-label="Current password" disabled />

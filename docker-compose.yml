@@ -38,8 +38,8 @@ services:
       - .env
     environment:
       - DEVNULL_HOME=/opt/devnull
-      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin1234}
+      # Auth is token-based. First user to register becomes admin.
+      # No static admin credentials needed.
       - DEVNULL_API_PORT=3001
       - NODE_ENV=${NODE_ENV:-production}
       - DATABASE_URL=postgresql://${POSTGRES_USER:-devnull}:${POSTGRES_PASSWORD:-devnull_pass}@postgres:5432/${POSTGRES_DB:-devnull}

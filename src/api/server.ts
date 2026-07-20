@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import { createRouter } from "./routes.js";
-import { initDefaultAdmin, isAuthEnabled } from "./auth.js";
+// Auth is always enabled — no more static admin credentials
 
 export interface ApiServerOptions {
   port?: number;
@@ -63,11 +63,7 @@ export function startApiServer(opts: ApiServerOptions = {}): import("http").Serv
     console.log(`  PUT  /api/v1/plans/:planId/tasks/:taskId`);
     console.log(`  POST /api/v1/plans/:id/tasks`);
     console.log(`  DELETE /api/v1/plans/:planId/tasks/:taskId`);
-    if (isAuthEnabled()) {
-      console.log(`[devnull API] Auth: Login required (ADMIN_USERNAME/ADMIN_PASSWORD is set)`);
-    } else {
-      console.warn(`[devnull API] WARNING: No ADMIN_PASSWORD set — API is OPEN (no auth)`);
-    }
+    console.log(`[devnull API] Auth: Token-based authentication active. First user to register becomes admin.`);
   });
 
   return server;

@@ -14,8 +14,9 @@ export interface ChatRequest {
   task: string;
   /** Optional: force plan mode on/off for this request. */
   planMode?: "auto" | "always" | "never";
-  /** Optional: collapse stale/superseded file-read snapshots in context. Default: false. */
-  leanToken?: boolean;
+  /** Optional: keep every historical copy of read_tool file snapshots in context instead of
+   *  collapsing stale ones (lean-token compaction is the default). Default: false. */
+  fullContextToken?: boolean;
   /** Optional: which project to run against. Defaults to the currently active project; falls
    *  back to the server's own cwd if no projects exist at all. */
   projectId?: string;
@@ -27,6 +28,9 @@ export interface ChatRequest {
   /** Optional: when true, the orchestrator auto-continues past the iteration limit instead of
    *  stopping. Used by the UI's "Continue" button when a limitation message is shown. */
   continueOnLimit?: boolean;
+  /** Optional: enable phase-based planning. When true, the task is divided into multiple phases
+   *  each with isolated ReAct memory to reduce token footprint. Default: false. */
+  phasePlanning?: boolean;
 }
 
 /** POST /api/v1/chat response data. */
@@ -52,11 +56,12 @@ export interface ChatResponse {
 export interface PlanRequest {
   task: string;
   planMode?: "auto" | "always" | "never";
-  leanToken?: boolean;
+  fullContextToken?: boolean;
   projectId?: string;
   maxIterations?: number;
   isolatedWorkspace?: boolean;
   continueOnLimit?: boolean;
+  phasePlanning?: boolean;
 }
 
 /** POST /api/v1/chat/plan response data. */
