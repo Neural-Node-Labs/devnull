@@ -14,6 +14,7 @@ import DiagnosticsPage from "./pages/DiagnosticsPage";
 import ProjectsPage from "./pages/ProjectsPage";
 import { PlansPage } from "./pages/PlansPage";
 import { PlanDetailPage } from "./pages/PlanDetailPage";
+import { TaskHistoryPage } from "./pages/TaskHistoryPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 
 export default function App() {
@@ -38,6 +39,7 @@ export default function App() {
               <Route path="/projects" element={<ProjectsPage />} />
               <Route path="/plans" element={<PlansPage />} />
               <Route path="/plans/:id" element={<PlanDetailPage />} />
+              <Route path="/task-history" element={<TaskHistoryPage />} />
               <Route
                 path="/admin"
                 element={

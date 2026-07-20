@@ -71,6 +71,28 @@ export interface ChatResponse {
     /** How many iterations the subagent completed before hitting the limit. */
     iterationCount: number;
   };
+  /**
+   * When present, the orchestrator hit the iteration limit and captured partial-success
+   * context — what was accomplished before stopping. Contains the last N tool calls,
+   * files modified, files read, commands run, and the last thought. The UI can surface
+   * this information to show the user what progress was made.
+   */
+  partialSuccess?: {
+    /** The last N tool calls made before the iteration limit was hit. */
+    toolCalls: { name: string; args: string; result: string }[];
+    /** Files that were modified during the run (write_edit_tool calls). */
+    filesModified: string[];
+    /** Files that were read during the run (read_tool calls). */
+    filesRead: string[];
+    /** Commands that were executed (run_command_tool calls). */
+    commandsRun: string[];
+    /** The last assistant thought before hitting the limit. */
+    lastThought: string;
+    /** How many iterations were completed before hitting the limit. */
+    iterationCount: number;
+    /** How many restarts occurred. */
+    restartCount: number;
+  };
 }
 
 /** POST /api/v1/chat/plan request body. */
@@ -105,6 +127,28 @@ export interface ExecuteResponse {
   limitation?: string;
   continueRequested?: boolean;
   iterationMaxReached?: boolean;
+  /**
+   * When present, the orchestrator hit the iteration limit and captured partial-success
+   * context — what was accomplished before stopping. Contains the last N tool calls,
+   * files modified, files read, commands run, and the last thought. The UI can surface
+   * this information to show the user what progress was made.
+   */
+  partialSuccess?: {
+    /** The last N tool calls made before the iteration limit was hit. */
+    toolCalls: { name: string; args: string; result: string }[];
+    /** Files that were modified during the run (write_edit_tool calls). */
+    filesModified: string[];
+    /** Files that were read during the run (read_tool calls). */
+    filesRead: string[];
+    /** Commands that were executed (run_command_tool calls). */
+    commandsRun: string[];
+    /** The last assistant thought before hitting the limit. */
+    lastThought: string;
+    /** How many iterations were completed before hitting the limit. */
+    iterationCount: number;
+    /** How many restarts occurred. */
+    restartCount: number;
+  };
 }
 
 /** GET /api/v1/health response data. */

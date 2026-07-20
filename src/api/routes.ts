@@ -157,10 +157,24 @@ export function createRouter(): Router {
     // interactive "continue?" prompt, so silently looping is the wrong default here.
     // When continueOnLimit is true (UI's "Continue" button), the orchestrator auto-continues
     // past the iteration limit instead of stopping.
+    //
+    // When the iteration limit is hit and the caller declines to continue, the handler:
+    // 1. Calls extractPartialSuccessContext() to capture what was accomplished
+    // 2. Calls synthesizeReport() to generate a partial-completion summary
+    // 3. Returns false to stop the orchestrator
+    // The partial-success context is then retrieved via getPartialSuccess() and included
+    // in the API response alongside the limitation field.
     const opts: OrchestratorOptions = {
       cwd,
       interactive: false,
-      onIterationLimitReached: async () => false,
+      onIterationLimitReached: async (_taskDescription: string, _iterationsSoFar: number) => {
+        // When continueOnLimit is true, auto-continue without capturing partial context
+        if (continueOnLimit) return true;
+        // Return false to stop — the orchestrator will call synthesizeReport() internally
+        // and set lastOutcome to "partial_success". We'll retrieve the partial-success
+        // context from getPartialSuccess() after run() completes.
+        return false;
+      },
     };
     if (planMode) opts.planMode = planMode;
     if (fullContextToken) opts.fullContextToken = true;
@@ -212,13 +226,40 @@ export function createRouter(): Router {
       if (sessionId) data.sessionId = sessionId;
       if (outcome !== "completed") {
         data.limitation =
-          outcome === "iteration_limit"
+          outcome === "iteration_limit" || outcome === "partial_success"
             ? "The task did not finish within the iteration limit."
             : "The plan was not approved, so no changes were made.";
-        if (outcome === "iteration_limit") {
+        if (outcome === "iteration_limit" || outcome === "partial_success") {
           data.iterationMaxReached = true;
           data.continueRequested = true;
         }
+      }
+      // Include partial-success context when the orchestrator captured it
+      const partialSuccess = orchestrator.getPartialSuccess();
+      if (partialSuccess) {
+        data.partialSuccess = partialSuccess;
+      }
+      // Include subagent limit context when a subagent hit its iteration limit
+      const subagentContext = orchestrator.getSubagentLimitContext();
+      if (subagentContext) {
+        data.subagentContext = subagentContext;
+      }
+      // Persist phase report to PostgreSQL when the iteration limit was hit during
+      // phase planning and we have partial-success context. This ensures the phase
+      // report store has a record of what was accomplished even when the task didn't
+      // complete normally. The store gracefully falls back if the DB is unreachable.
+      if (partialSuccess && phasePlanning !== false) {
+        const phaseReportStore = new PhaseReportStore();
+        await phaseReportStore.save({
+          taskId: crypto.randomUUID(),
+          phaseNumber: 1,
+          phaseTitle: "Partial Completion",
+          content: result,
+          tokens: orchestrator.getCumulativeUsage()?.totalTokens ?? 0,
+          iterations: partialSuccess.iterationCount,
+        }).catch(() => {
+          // PhaseReportStore already logs warnings on failure; no need to re-log
+        });
       }
       const body: ApiResponse<ChatResponse> = { success: true, data };
       res.json(body);
@@ -336,7 +377,14 @@ export function createRouter(): Router {
       cwd,
       planMode: "never", // Plan already done
       interactive: false,
-      onIterationLimitReached: async () => false,
+      onIterationLimitReached: async (_taskDescription: string, _iterationsSoFar: number) => {
+        // When continueOnLimit is true, auto-continue without capturing partial context
+        if (session.continueOnLimit) return true;
+        // Return false to stop — the orchestrator will call synthesizeReport() internally
+        // and set lastOutcome to "partial_success". We'll retrieve the partial-success
+        // context from getPartialSuccess() after run() completes.
+        return false;
+      },
     };
     if (session.fullContextToken) opts.fullContextToken = true;
     if (session.maxIterations) opts.maxIterations = session.maxIterations;
@@ -352,13 +400,18 @@ export function createRouter(): Router {
       const data: ExecuteResponse = { result, iterations: 0 };
       if (outcome !== "completed") {
         data.limitation =
-          outcome === "iteration_limit"
+          outcome === "iteration_limit" || outcome === "partial_success"
             ? "The task did not finish within the iteration limit."
             : "The plan was not approved, so no changes were made.";
-        if (outcome === "iteration_limit") {
+        if (outcome === "iteration_limit" || outcome === "partial_success") {
           data.iterationMaxReached = true;
           data.continueRequested = true;
         }
+      }
+      // Include partial-success context when the orchestrator captured it
+      const partialSuccess = orchestrator.getPartialSuccess();
+      if (partialSuccess) {
+        data.partialSuccess = partialSuccess;
       }
       const body: ApiResponse<ExecuteResponse> = { success: true, data };
       res.json(body);
@@ -441,6 +494,53 @@ export function createRouter(): Router {
     const tasks = readTaskHistory(cwd, limit);
     const body: ApiResponse = { success: true, data: { tasks } };
     res.json(body);
+  });
+
+  // ─── POST /api/v1/task-history — manually add a task history entry ─────────────────────
+  router.post("/task-history", async (req: Request, res: Response) => {
+    const { task, summary, iterations, totalTokens } = req.body as {
+      task?: string;
+      summary?: string;
+      iterations?: number;
+      totalTokens?: number;
+    };
+
+    if (!task || typeof task !== "string" || task.trim().length === 0) {
+      const body: ApiResponse = { success: false, error: "Missing or empty 'task' field" };
+      res.status(400).json(body);
+      return;
+    }
+
+    if (!summary || typeof summary !== "string" || summary.trim().length === 0) {
+      const body: ApiResponse = { success: false, error: "Missing or empty 'summary' field" };
+      res.status(400).json(body);
+      return;
+    }
+
+    const { cwd } = resolveProjectCwd(req.body.projectId as string | undefined);
+
+    // Write to the markdown file
+    const { appendTaskHistory } = await import("../core/taskHistory.js");
+    const entry = appendTaskHistory(cwd, {
+      task: task.trim(),
+      summary: summary.trim(),
+      iterations: typeof iterations === "number" ? iterations : 0,
+      totalTokens: typeof totalTokens === "number" ? totalTokens : undefined,
+    });
+
+    // Also persist to PostgreSQL if available
+    const store = new TaskHistoryStore();
+    await store.save({
+      task: task.trim(),
+      summary: summary.trim(),
+      iterations: typeof iterations === "number" ? iterations : 0,
+      totalTokens: typeof totalTokens === "number" ? totalTokens : null,
+    }).catch(() => {
+      // TaskHistoryStore already logs warnings on failure; no need to re-log
+    });
+
+    const body: ApiResponse = { success: true, data: entry };
+    res.status(201).json(body);
   });
 
   // ─── Task History Logs — get telemetry logs for a specific task ───────────────────────

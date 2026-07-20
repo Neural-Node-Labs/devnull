@@ -315,12 +315,160 @@ CREATE TABLE IF NOT EXISTS wbs_entries (
   existing summary generation uses a separate LLM call with a focused prompt,
   which is already the right approach.
 
-## 11. Implementation Sequence
+## 11. Task History Data Model
 
-1. **Phase 3**: Wire DB persistence into orchestrator — `PostgresTaskHistory.append()`
+### 11.1 Core Interface
+
+The canonical TypeScript interface for a task history entry is defined in `src/core/taskHistory.ts`:
+
+```typescript
+export interface TaskHistoryEntry {
+  id: string;           // e.g. "task_1712345678901_a1b2c3"
+  task: string;         // Original task description
+  summary: string;      // What was accomplished
+  timestamp: string;    // ISO 8601
+  iterations: number;   // Total ReAct loop iterations
+  totalTokens?: number; // Cumulative token usage
+}
+```
+
+### 11.2 Dual Persistence
+
+Every task history entry is written to **two** storage backends:
+
+| Backend | Path / Table | Format | Purpose |
+|---|---|---|---|
+| Filesystem (JSONL) | `.agent/task-history.jsonl` | JSON Lines (one JSON object per line) | CLI access, offline, debugging |
+| Filesystem (Markdown) | `tasks/task_history.md` | Markdown with `##` headings | Human-readable, git-trackable |
+| PostgreSQL | `task_history` table | Relational rows | UI consumption, structured queries |
+
+### 11.3 Filesystem Schema: `.agent/task-history.jsonl`
+
+Each line is a JSON object matching `TaskHistoryEntry`. Capped at 200 entries (oldest dropped on append).
+
+```jsonl
+{"id":"task_1712345678901_a1b2c3","task":"implement feature X","summary":"...","timestamp":"2025-07-17T10:30:00.000Z","iterations":15,"totalTokens":45000}
+{"id":"task_1712345678902_d4e5f6","task":"fix bug in Y","summary":"...","timestamp":"2025-07-17T11:00:00.000Z","iterations":8,"totalTokens":22000}
+```
+
+### 11.4 Filesystem Schema: `tasks/task_history.md`
+
+Markdown format with `##` headings for each entry. Capped at 50 entries.
+
+```markdown
+## Jul 17, 2025, 10:30:00 AM GMT — implement feature X
+
+**Summary:** Implemented the rate limiter with Redis backend, added tests, verified with load testing.
+
+**Stats:** 15 iterations, 45,000 tokens
+
+---
+
+## Jul 17, 2025, 11:00:00 AM GMT — fix bug in Y
+
+**Summary:** Fixed the null-pointer exception in the auth middleware by adding input validation.
+
+**Stats:** 8 iterations, 22,000 tokens
+
+---
+```
+
+### 11.5 PostgreSQL Schema: `task_history` Table
+
+```sql
+CREATE TABLE IF NOT EXISTS task_history (
+  id TEXT PRIMARY KEY,
+  task TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  timestamp TEXT NOT NULL,
+  iterations INTEGER DEFAULT 0,
+  total_tokens INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_history_timestamp ON task_history(timestamp DESC);
+```
+
+### 11.6 API Types
+
+Defined in `src/api/types.ts`:
+
+```typescript
+/** A task history entry returned by the API. */
+export interface TaskHistoryEntryResponse {
+  id: string;
+  task: string;
+  summary: string;
+  timestamp: string;
+  iterations: number;
+  totalTokens: number | null;
+}
+
+/** GET /api/v1/task-history query params. */
+export interface TaskHistoryQuery {
+  limit?: number;
+}
+
+/** GET /api/v1/task-history response data. */
+export interface TaskHistoryListResponse {
+  tasks: TaskHistoryEntryResponse[];
+}
+
+/** GET /api/v1/task-history/:id response data. */
+export interface TaskHistoryDetailResponse {
+  task: TaskHistoryEntryResponse;
+}
+```
+
+### 11.7 UI Consumption
+
+The UI consumes task history via `GET /api/v1/task-history?limit=N` (defined in `src/api/routes.ts`). The `TaskHistoryPage.tsx` component:
+
+1. Calls `api.getTaskHistory(undefined, 50)` on mount
+2. Renders each entry as a collapsible card with:
+   - **Task description** (truncated with ellipsis)
+   - **Timestamp** (localized)
+   - **Token badge** — color-coded: 🔴 red >1M, 🟢 green >500K, 🔵 blue <500K
+   - **Iteration badge** — color-coded: 🔴 red >100, 🟢 green >50, 🔵 blue <20
+   - **Summary** (shown on expand)
+3. Supports refresh button to reload
+
+### 11.8 Data Flow
+
+```
+CLI: orchestrator.run() completes
+  │
+  ├─► appendTaskHistory(cwd, entry)
+  │     ├─► Write to .agent/task-history.jsonl (JSONL, capped at 200)
+  │     └─► Write to tasks/task_history.md (Markdown, capped at 50)
+  │
+  └─► PostgresTaskHistory.append(entry)
+        └─► INSERT INTO task_history (best-effort, logs warning on failure)
+
+UI: TaskHistoryPage mounts
+  │
+  └─► GET /api/v1/task-history?limit=50
+        └─► routes.ts reads from .agent/task-history.jsonl via readTaskHistory()
+              └─► Returns TaskHistoryEntry[] as JSON
+```
+
+### 11.9 Color-Coding Rules (UI + CLI)
+
+| Metric | Threshold | Color | Label |
+|---|---|---|---|
+| Tokens | > 1,000,000 | 🔴 Red (`#ef4444`) | >1M |
+| Tokens | > 500,000 | 🟢 Green (`#22c55e`) | >500K |
+| Tokens | ≤ 500,000 | 🔵 Blue (`#3b82f6`) | <500K |
+| Iterations | > 100 | 🔴 Red (`#ef4444`) | >100 |
+| Iterations | > 50 | 🟢 Green (`#22c55e`) | >50 |
+| Iterations | ≤ 20 | 🔵 Blue (`#3b82f6`) | <20 |
+
+## 12. Implementation Sequence
+
+1. **Phase 1**: Design & Data Model — this document (blueprint.md, solution-design.md updates)
+2. **Phase 2**: Wire DB persistence into orchestrator — `PostgresTaskHistory.append()`
    called from `run()` and `runPhasePlanning()`; phase report and WBS DB writes.
-2. **Phase 4**: Add `--single-phase` CLI flag to `commander` options.
-3. **Phase 5**: Add DB schemas for phase reports and WBS entries.
-4. **Phase 6**: Add API endpoints for phase reports and WBS.
-5. **Phase 7**: UI components for phase stats display.
-6. **Phase 8**: Testing — update `testPhasePlanning.ts` and add integration tests.
+3. **Phase 3**: Add `--single-phase` CLI flag to `commander` options.
+4. **Phase 4**: Add DB schemas for phase reports and WBS entries.
+5. **Phase 5**: Add API endpoints for phase reports and WBS.
+6. **Phase 6**: UI components for phase stats display.
+7. **Phase 7**: Testing — update `testPhasePlanning.ts` and add integration tests.

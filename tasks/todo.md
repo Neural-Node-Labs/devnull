@@ -1,42 +1,42 @@
-# Plan: Phase 4: Wire the UI "Continue" Button for Subagent Limits
-Extend the existing UI "▶ Continue" button (currently only shown on top-level limitation messages) to also appear when a subagent hits its iteration limit. Ensure the re-send payload includes the necessary flags (`continueOnLimit: true`) and the preserved subagent context so the server can resume the subagent without losing progress. Test the full flow end-to-end.
+# Plan: Phase 5: Validation & Documentation
+Run the full test suite, verify both persistence paths work end-to-end (markdown file + database), and update documentation (`artifact.md` with any new files, `blueprint.md`/`solution-design.md` with final implementation details). Capture any lessons learned in `tasks/lessons.md`.
 
-### Phase 4: Wire the UI "Continue" Button for Subagent Limits
-Extend the existing UI "▶ Continue" button (currently only shown on top-level limitation messages) to also appear when a subagent hits its iteration limit. Ensure the re-send payload includes the necessary flags (`continueOnLimit: true`) and the preserved subagent context so the server can resume the subagent without losing progress. Test the full flow end-to-end.
+### Phase 5: Validation & Documentation
+Run the full test suite, verify both persistence paths work end-to-end (markdown file + database), and update documentation (`artifact.md` with any new files, `blueprint.md`/`solution-design.md` with final implementation details). Capture any lessons learned in `tasks/lessons.md`.
 
 Context from previous phases:
 
-### Phase 1: Diagnose the Subagent Iteration-Limit Behavior
-Read the orchestrator source (`src/core/orchestrator.ts`) and the subagent tool implementation to understand exactly how iteration limits propagate. Identify the code path where a subagent hitting `maxIterations` causes the entire process to stop rather than returning control to the parent. Document the current flow and the specific lines that need to change.
-In Phase 1, the orchestrator source (`src/core/orchestrator.ts`) and subagent tool implementation were analyzed to trace how iteration limits propagate. The key finding is that when a subagent hits `maxIterations`, the orchestrator's `runSubagent` method returns a `lastOutcome` of `iteration_limit` which causes the entire process to stop rather than returning control to the parent agent. No files were changed; this was purely a diagnostic phase that identified the specific code paths needing modification in subsequent phases.
+### Phase 1: Design & Data Model
+Design the data model for task history entries, including the schema for `tasks/task_history.md` (markdown format) and the database table (PostgreSQL). Define the interface/type for history entries, the fields to capture (date, task filename, project detail, status, plus any additional metadata like duration, result summary, etc.), and how the UI will consume this data. Produce updated `blueprint.md` and `solution-design.md` sections covering this new feature.
+Phase 1 accomplished the design and documentation of the task history data model by creating `tasks/task_history.md` and updating `blueprint.md` and `solution-design.md` with a new section covering the core interface, markdown schema, PostgreSQL schema, and UI consumption. No source code, database migrations, or UI changes were made—the phase focused entirely on documenting the existing implementation. The next phase should proceed with implementing the database migration, updating source files, and building the UI components as described in the design documents.
 
-_Phase report: tasks/fix-subagent-it-might-be-the-tool-it-stop-the-entire-process-phase-1.md_
+_Phase report: tasks/implement-1-each-task-overall-final-summary-will-be-appended-phase-1.md_
 
-### Phase 2: Refactor Subagent Iteration-Limit Handling
-Modify the subagent execution path so that when a subagent hits the iteration limit, it does not terminate the parent orchestrator. Instead, return a structured result (e.g., `{ status: "iteration_limit", partialOutput, iterationCount }`) to the parent, allowing the parent to decide whether to continue, retry, or synthesize a partial report. Ensure the subagent's accumulated context (tool calls, observations) is preserved in the returned result.
-Based on the phase result, the refactoring of subagent iteration-limit handling was partially completed. The key changes were made to `src/core/types.ts` and `src/core/orchestrator.ts`, including adding a `lastOutcome` property and `lastMessages` field to preserve subagent context. However, the implementation was not finished—the final step of saving messages to `lastMessages` before the `return finalContent;` line in the `run()` method was identified but not executed. The next phase needs to complete this final edit and verify the full iteration-limit result flow works correctly.
+### Phase 2: Task History Markdown Writer
+Implement the logic that appends a new entry to `tasks/task_history.md` after each task completes. This includes: creating the file if it doesn't exist (with a header), formatting each entry as a markdown table row, and ensuring the append is atomic (read → append → write). Wire this into the orchestrator's completion path (after `synthesizeReport()` or at the end of `run()`). Add a test that verifies the markdown file is correctly written and formatted.
+Phase 2 implemented a markdown table format for task history entries in `tasks/task_history.md`, updating `src/core/taskHistory.ts` with atomic read-append-write logic and a new table row format. The test file `src/test/testTaskHistoryMarkdown.ts` was created but does not pass due to a row count assertion mismatch (counting header/separator rows as data rows). The next phase needs to fix the test's row count logic and verify the orchestrator's end-to-end integration with the new markdown format.
 
-_Phase report: tasks/fix-subagent-it-might-be-the-tool-it-stop-the-entire-process-phase-2.md_
+_Phase report: tasks/implement-1-each-task-overall-final-summary-will-be-appended-phase-2.md_
 
-### Phase 3: Add "Continue" Prompt to Parent Orchestrator
-Update the parent orchestrator's logic after receiving an iteration-limited subagent result to emit a user-facing prompt (e.g., via the existing `onIterationLimitReached` callback or a new `onSubagentLimitReached` callback) asking whether to continue. When the user responds "yes", reset the subagent's iteration counter and re-invoke it with the preserved context. When "no", synthesize a partial-completion report from the subagent's accumulated work.
-In Phase 3, the parent orchestrator was updated to prompt the user when a subagent hits its iteration limit, asking whether to continue. The key file changed was `src/core/orchestrator.ts`, where logic was added to reset the subagent's iteration counter and re-invoke it with preserved context on a "yes" response, or synthesize a partial-completion report on "no". The next phase should note that the `askContinue` method and related callback integration are in place, but the `lastMessages` state may still need to be saved before the `return finalContent;` line in the `run()` method.
+### Phase 3: Database Persistence Layer
+Implement the database store for task history entries. Create a `TaskHistoryStore` class (analogous to `PhaseReportStore`) with `save(entry)` and `list()` methods backed by PostgreSQL. Define the migration SQL to create the `task_history` table. Wire the store into the orchestrator so that on task completion, the entry is also saved to the database. Add unit tests for the store.
+Phase 3 implemented the database persistence layer for task history by creating a migration SQL file (`migrations/001_create_task_history.sql`), updating the orchestrator to use `TaskHistoryStore` instead of `PostgresTaskHistory`, and adding a unit test file (`src/test/testTaskHistoryStore.ts`). The key files changed were `src/core/orchestrator.ts`, `src/api/routes.ts`, and the new migration and test files. The next phase should note that the migration has not been applied to any database, the unit tests have not been executed, and the old `PostgresTaskHistory` file remains in the codebase.
 
-_Phase report: tasks/fix-subagent-it-might-be-the-tool-it-stop-the-entire-process-phase-3.md_
+_Phase report: tasks/implement-1-each-task-overall-final-summary-will-be-appended-phase-3.md_
+
+### Phase 4: API Endpoints & UI Integration
+Add REST API endpoints: `GET /api/v1/task-history` (list all entries) and optionally `POST /api/v1/task-history` (if manual entries are needed). Register these routes in `src/api/routes.ts`. Update the UI to display the task history — either a new page/section or a sidebar widget that fetches and renders the list. Add integration tests for the new endpoints.
+Phase 4 added a `POST /api/v1/task-history` endpoint to `src/api/routes.ts` for manual task history entries and integrated the existing `TaskHistoryPage` UI component into the app's routing in `ui/src/App.tsx`. The GET endpoint and UI page were confirmed as already functional from prior phases. The next phase should create integration tests for the new POST endpoint and add a Navbar link to the `/task-history` route, as these tasks remain incomplete.
+
+_Phase report: tasks/implement-1-each-task-overall-final-summary-will-be-appended-phase-4.md_
 
 
 Complete this phase. Do not work on future phases — focus only on what this phase requires.
 
-## Plan: Wire UI "Continue" Button for Subagent Limits
-
-- [ ] **Read current UI chat component** — Read `ui/src/components/Chat.svelte` (or equivalent) to understand the existing "▶ Continue" button implementation for top-level limitation messages. Identify the message type/field detection logic and the `handleContinue` function.
-
-- [ ] **Read orchestrator's subagent limit response format** — Read `src/core/orchestrator.ts` to confirm the exact structure returned when a subagent hits its iteration limit (the `lastOutcome`, `lastMessages`, and any `limitation` field in the response). Verify what the API sends to the UI for subagent limits vs. top-level limits.
-
-- [ ] **Read API route handler** — Read `src/api/routes.ts` to see how the orchestrator's subagent limit result is serialized into the SSE/WebSocket response. Confirm whether subagent limits produce a `limitation` message type in the UI stream.
-
-- [ ] **Extend UI "Continue" button to subagent limits** — Modify the chat component to detect subagent limitation messages (same `limitation` field or a new indicator) and show the "▶ Continue" button. Ensure the re-send payload includes `continueOnLimit: true` AND the preserved subagent context (e.g., `lastMessages` or a continuation token).
-
-- [ ] **Verify API accepts subagent continuation payload** — Read `src/api/routes.ts` to confirm the `/api/v1/chat/execute` endpoint correctly handles `continueOnLimit: true` with subagent context. If missing, add the necessary logic to pass the preserved context to the orchestrator's `continueSubagent()` or equivalent method.
-
-- [ ] **Test end-to-end flow** — Run the application (or relevant unit/integration tests) to verify: (1) subagent hits iteration limit, (2) UI shows "▶ Continue" button, (3) clicking it re-sends with correct payload, (4) server resumes subagent with preserved context, (5) subagent completes successfully.
+- [ ] **Run full test suite** — execute `npm test` (or equivalent), capture all pass/fail output, and log any failures with exact error messages
+- [ ] **Verify markdown persistence path** — manually inspect `tasks/task_history.md` to confirm entries are correctly appended with proper table formatting after a test task run
+- [ ] **Verify database persistence path** — check that `TaskHistoryStore` is wired into the orchestrator, confirm migration SQL exists, and verify the store is called on task completion (via code review or test output)
+- [ ] **Fix any test failures** — address row-count assertion in `testTaskHistoryMarkdown.ts` and any other failures from the full suite; re-run tests to confirm green
+- [ ] **Update `artifact.md`** — add any new files created across all phases (migrations, test files, UI components) and remove any stale entries
+- [ ] **Update `blueprint.md` and `solution-design.md`** — reconcile with final implementation: document actual data flow, endpoint behavior, and any deviations from the original design
+- [ ] **Capture lessons in `tasks/lessons.md`** — record any patterns, mistakes, or process improvements discovered during this phase (e.g., test assertion gaps, documentation drift)

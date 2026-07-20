@@ -22,10 +22,15 @@ import {
 import { compactStaleFileReads } from "./contextCompaction.js";
 import { createHealthState, scoreStep, rollingHealth, HealthState } from "./stepScorer.js";
 import { appendTaskHistory } from "./taskHistory.js";
-import { PostgresTaskHistory } from "./postgresTaskHistory.js";
+import { TaskHistoryStore } from "../api/taskHistoryStore.js";
 import { PhaseReportStore } from "../api/phaseReportStore.js";
 import { WbsStore } from "../api/wbsStore.js";
 import { prepareWorkspace } from "./workspaceManager.js";
+
+const ANSI_GREEN = "\x1b[32m";
+const ANSI_RESET = "\x1b[0m";
+const ANSI_YELLOW = "\x1b[33m";
+
 
 export interface OrchestratorOptions {
   maxIterations?: number; // "iteration maxout" ceiling per round
@@ -144,18 +149,50 @@ export class ReActOrchestrator {
   private iterationCount = 0;
   private health: HealthState = createHealthState();
   private lastNudgeIteration = -Infinity;
-  private lastOutcome: "completed" | "iteration_limit" | "plan_rejected" | "partial_success" = "completed";
+  private lastOutcome: "completed" | "iteration_limit" | "plan_rejected" | "partial_success" | "partial_completion" = "completed";
   /** The last ReAct message history from the most recent run() call. Used by runSubagent()
    *  to extract accumulated context (tool calls, observations, last thought) when a subagent
    *  hits the iteration limit. */
   private lastMessages: LlmMessage[] = [];
 
+  /**
+   * Captures what was accomplished before the iteration limit was hit. Populated when the
+   * orchestrator hits the iteration limit and synthesizes a partial-completion report.
+   * Contains the last N tool calls, their results, and any files modified, so callers
+   * (e.g. the API) can surface this information to the user.
+   */
+  private partialSuccess?: {
+    /** The last N tool calls made before the iteration limit was hit. */
+    toolCalls: { name: string; args: string; result: string }[];
+    /** Files that were modified during the run (write_edit_tool calls). */
+    filesModified: string[];
+    /** Files that were read during the run (read_tool calls). */
+    filesRead: string[];
+    /** Commands that were executed (run_command_tool calls). */
+    commandsRun: string[];
+    /** The last assistant thought before hitting the limit. */
+    lastThought: string;
+    /** How many iterations were completed before hitting the limit. */
+    iterationCount: number;
+    /** How many restarts occurred. */
+    restartCount: number;
+  };
+
+  /** Read-only view of the partial success context, if any. Used by the API to include
+   *  partial-progress information in limitation responses so the UI can show what was
+   *  accomplished before the iteration limit was hit. */
+  getPartialSuccess(): typeof this.partialSuccess {
+    return this.partialSuccess;
+  }
+
   /** How the most recent run() call ended. "completed" means a genuine final answer was
    *  reached; "partial_success" means the iteration limit was hit but meaningful progress
-   *  was made and a summary was produced; anything else means the returned text is a
-   *  fallback explanation, not a real result, and callers (e.g. the API) should surface
-   *  that distinction rather than treating it as a normal success. */
-  getLastOutcome(): "completed" | "iteration_limit" | "plan_rejected" | "partial_success" {
+   *  was made and a summary was produced; "partial_completion" means the iteration limit
+   *  was hit and a detailed partial-success record was captured with tool calls, results,
+   *  and files modified; anything else means the returned text is a fallback explanation,
+   *  not a real result, and callers (e.g. the API) should surface that distinction rather
+   *  than treating it as a normal success. */
+  getLastOutcome(): "completed" | "iteration_limit" | "plan_rejected" | "partial_success" | "partial_completion" {
     return this.lastOutcome;
   }
 
@@ -347,6 +384,12 @@ export class ReActOrchestrator {
         if (!shouldContinue) {
           console.log("Stopping at user's request.");
           this.lastOutcome = "partial_success";
+          // Capture partial-success context before synthesizing the report.
+          // This extracts the last N tool calls, files modified, files read,
+          // commands run, and the last thought from the message history.
+          // Callers (e.g. the API) can retrieve this via getPartialSuccess()
+          // and include it in the response alongside the limitation field.
+          this.extractPartialSuccessContext(messages, this.iterationCount, restartCount);
           // Always synthesize a proper report from the message history instead of
           // relying on finalContent (which may be empty or just a brief thought from
           // a tool-calling turn). This ensures the orchestrator NEVER returns an
@@ -502,12 +545,13 @@ export class ReActOrchestrator {
                 iterationCount: observation.iterationCount,
               };
               this.lastOutcome = "partial_success";
-              const partialReport = this.synthesizeSubagentPartialReport(
+              const partialReport = await this.synthesizeSubagentPartialReport(
                 taskDescription,
                 observation.iterationCount,
                 observation.partialOutput?.lastThought ?? "",
                 observation.partialOutput?.toolCalls ?? [],
-                observation.partialOutput?.observations ?? []
+                observation.partialOutput?.observations ?? [],
+                messages // pass full conversation history for richer context
               );
               messages.push({ role: "tool", tool_call_id: call.id, name: "subagent_tool", content: JSON.stringify({ status: "partial_success", summary: partialReport, iterationCount: observation.iterationCount }) });
               continue;
@@ -594,13 +638,14 @@ export class ReActOrchestrator {
       };
       appendTaskHistory(this.projectRoot, historyEntry);
       // Also persist to PostgreSQL (best-effort)
-      const pgHistory = new PostgresTaskHistory();
-      await pgHistory.append({
-        id: `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        timestamp: new Date().toISOString(),
-        ...historyEntry,
+      const taskHistoryStore = new TaskHistoryStore();
+      await taskHistoryStore.save({
+        task: historyEntry.task,
+        summary: historyEntry.summary,
+        iterations: historyEntry.iterations,
+        totalTokens: historyEntry.totalTokens ?? null,
       });
-      await pgHistory.close();
+      await taskHistoryStore.close();
     }
     if (showConsole && !runOpts.isSubagent) {
       reportTotalUsage(this.cumulativeUsage, this.llmCallCount, indent);
@@ -612,9 +657,104 @@ export class ReActOrchestrator {
   }
 
   /**
+   * Extracts partial-success context from the message history when the iteration limit is hit.
+   * Captures the last N tool calls, their results, files modified, files read, commands run,
+   * and the last assistant thought. This context is stored in `this.partialSuccess` and can be
+   * retrieved by callers (e.g. the API) via `getPartialSuccess()`.
+   *
+   * @param messages - The full ReAct message history
+   * @param iterationCount - How many iterations were completed before hitting the limit
+   * @param restartCount - How many restarts occurred
+   */
+  private extractPartialSuccessContext(
+    messages: LlmMessage[],
+    iterationCount: number,
+    restartCount: number
+  ): void {
+    const toolCalls: { name: string; args: string; result: string }[] = [];
+    const filesModified: string[] = [];
+    const filesRead: string[] = [];
+    const commandsRun: string[] = [];
+    let lastThought = "";
+
+    // Walk backwards through messages to find the last N tool calls and their results
+    const MAX_TOOL_CALLS = 10;
+    for (let i = messages.length - 1; i >= 0 && toolCalls.length < MAX_TOOL_CALLS; i--) {
+      const msg = messages[i];
+
+      if (msg.role === "assistant" && msg.content) {
+        if (!lastThought) lastThought = msg.content;
+      }
+
+      if (msg.role === "assistant" && msg.tool_calls) {
+        for (const tc of msg.tool_calls) {
+          if (toolCalls.length >= MAX_TOOL_CALLS) break;
+          const name = tc.function.name;
+          const args = tc.function.arguments;
+
+          // Track files modified (write_edit_tool)
+          if (name === "write_edit_tool") {
+            try {
+              const parsed = JSON.parse(args);
+              if (parsed.filePath) filesModified.push(parsed.filePath);
+            } catch { /* ignore parse errors */ }
+          }
+
+          // Track files read (read_tool)
+          if (name === "read_tool") {
+            try {
+              const parsed = JSON.parse(args);
+              if (parsed.filePath) filesRead.push(parsed.filePath);
+            } catch { /* ignore parse errors */ }
+          }
+
+          // Track commands run (run_command_tool)
+          if (name === "run_command_tool") {
+            try {
+              const parsed = JSON.parse(args);
+              if (parsed.command) commandsRun.push(parsed.command.slice(0, 100));
+            } catch { /* ignore parse errors */ }
+          }
+
+          // Find the corresponding tool result (the next tool-role message with matching id)
+          let result = "";
+          for (let j = i + 1; j < messages.length; j++) {
+            if (messages[j].role === "tool" && messages[j].tool_call_id === tc.id) {
+              const content = typeof messages[j].content === "string"
+                ? messages[j].content
+                : JSON.stringify(messages[j].content);
+              result = content.slice(0, 200);
+              break;
+            }
+          }
+
+          toolCalls.push({ name, args: args.slice(0, 150), result });
+        }
+      }
+    }
+
+    // Reverse toolCalls so they're in chronological order
+    toolCalls.reverse();
+
+    this.partialSuccess = {
+      toolCalls,
+      filesModified: [...new Set(filesModified)], // deduplicate
+      filesRead: [...new Set(filesRead)],
+      commandsRun: [...new Set(commandsRun)],
+      lastThought,
+      iterationCount,
+      restartCount,
+    };
+  }
+
+  /**
    * Synthesizes a meaningful report from the message history when the orchestrator terminates
    * without a proper final answer (e.g., iteration limit hit while the model was still making
    * tool calls). This ensures the orchestrator NEVER returns an empty or meaningless string.
+   *
+   * The method first tries to call the LLM to generate a coherent summary of what was
+   * accomplished vs. left undone. If the LLM call fails or returns empty, it falls back to
+   * a mechanical reconstruction of tool calls and observations.
    *
    * The report includes:
    * - What was accomplished (tools called, files changed, observations made)
@@ -622,13 +762,13 @@ export class ReActOrchestrator {
    * - The last thought/state of the model
    * - A fallback message if nothing useful can be extracted
    */
-  private synthesizeReport(
+  private async synthesizeReport(
     taskDescription: string,
     messages: LlmMessage[],
     currentFinalContent: string,
     maxIterations: number,
     restartCount: number
-  ): string {
+  ): Promise<string> {
     // If the model already produced a meaningful final answer (non-empty, not just a brief thought),
     // use it as-is. A "meaningful" answer is one that's longer than a typical mid-task thought
     // (e.g., "Reading file..." or "Step 1 thinking...") and doesn't end with "..." or "thinking..."
@@ -667,7 +807,27 @@ export class ReActOrchestrator {
       }
     }
 
-    // Build a structured report
+    // Try to call the LLM for a coherent summary first.
+    // Pass the full message history so the LLM has rich context for generating
+    // the structured report (what was accomplished, left undone, key decisions, blockers).
+    try {
+      const llmSummary = await this.callLlmForSummary(
+        taskDescription,
+        toolActions,
+        observations,
+        lastThought,
+        maxIterations,
+        restartCount,
+        messages // pass full conversation history for richer context
+      );
+      if (llmSummary && llmSummary.length > 10) {
+        return llmSummary;
+      }
+    } catch {
+      // LLM call failed — fall through to mechanical fallback
+    }
+
+    // Mechanical fallback: build a structured report from extracted data
     const parts: string[] = [];
     parts.push(`Task stopped: hit the ${maxIterations}-iteration limit${restartCount > 0 ? ` after ${restartCount} restart(s)` : ""} without reaching a final answer.`);
 
@@ -686,6 +846,74 @@ export class ReActOrchestrator {
     parts.push(`\n## Next steps\n\nPartial progress may exist in the workspace. Check task_history_tool or the workspace files directly to see what was accomplished before continuing.`);
 
     return parts.join("\n");
+  }
+
+  /**
+   * Calls the LLM to generate a structured report of what was accomplished vs. left undone
+   * during a ReAct loop that hit the iteration limit. The report covers four sections:
+   *
+   * 1. **What was accomplished** — concrete actions taken (files read, files changed,
+   *    commands run, tests executed, tool calls made)
+   * 2. **What was left undone** — what the task still needs that wasn't completed
+   * 3. **Key decisions made** — important choices or trade-offs made during execution
+   * 4. **Blockers encountered** — errors, unexpected results, or obstacles that prevented
+   *    further progress
+   *
+   * Returns the LLM's report text, or an empty string if the call fails.
+   */
+  private async callLlmForSummary(
+    taskDescription: string,
+    toolActions: string[],
+    observations: string[],
+    lastThought: string,
+    maxIterations: number,
+    restartCount: number,
+    messages?: LlmMessage[]
+  ): Promise<string> {
+    const toolCallsText = toolActions.length > 0
+      ? toolActions.map((a) => `- ${a}`).join("\n")
+      : "(none)";
+    const observationsText = observations.length > 0
+      ? observations.slice(-5).map((o) => `- ${o}`).join("\n")
+      : "(none)";
+
+    // Build a condensed conversation transcript from the full message history if available
+    let conversationTranscript = "";
+    if (messages && messages.length > 0) {
+      const transcriptParts: string[] = [];
+      for (const msg of messages) {
+        if (msg.role === "system") continue; // skip system prompt
+        if (msg.role === "user" && msg.content) {
+          transcriptParts.push(`[User] ${msg.content.slice(0, 300)}`);
+        } else if (msg.role === "assistant" && msg.content) {
+          transcriptParts.push(`[Assistant] ${msg.content.slice(0, 300)}`);
+          if (msg.tool_calls) {
+            for (const tc of msg.tool_calls) {
+              transcriptParts.push(`  → Tool call: ${tc.function.name}(${tc.function.arguments.slice(0, 150)})`);
+            }
+          }
+        } else if (msg.role === "tool" && msg.content) {
+          const obs = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+          transcriptParts.push(`  [Observation] ${obs.slice(0, 200)}`);
+        }
+      }
+      conversationTranscript = transcriptParts.join("\n");
+    }
+
+    const summaryPrompt: LlmMessage[] = [
+      {
+        role: "system",
+        content: "You are a summarization assistant. Given a task description and the record of a ReAct loop that hit its iteration limit, produce a structured report with exactly four sections:\n\n## What was accomplished\nList the concrete actions taken: files read, files changed, commands run, tests executed, tool calls made. Be specific about what was done.\n\n## What was left undone\nDescribe what the task still needs that wasn't completed. Be honest about gaps.\n\n## Key decisions made\nNote any important choices or trade-offs made during execution — e.g., which approach was chosen, what was prioritized, what was deferred.\n\n## Blockers encountered\nList any errors, unexpected results, or obstacles that prevented further progress. If none were encountered, state \"No blockers encountered.\"\n\nBe factual and concise. Use bullet points for each section. Do not include the iteration limit details — those are already known.",
+      },
+      {
+        role: "user",
+        content: `Task: ${taskDescription}\n\nTool calls made (${toolActions.length}):\n${toolCallsText}\n\nKey observations:\n${observationsText}\n\nLast model thought:\n${lastThought || "(none)"}\n\nIterations: ${maxIterations}${restartCount > 0 ? ` across ${restartCount + 1} restart(s)` : ""}\n\n${conversationTranscript ? `Full conversation transcript:\n${conversationTranscript}` : ""}`,
+      },
+    ];
+
+    const response = await this.llm.complete(summaryPrompt);
+    this.addUsage(response.usage);
+    return response.content.trim();
   }
 
   /**
@@ -835,9 +1063,15 @@ export class ReActOrchestrator {
     }
 
     console.log(`\n--- Plan (tasks/todo.md) ---\n${planMarkdown}`);
+    console.log(
+      `${ANSI_GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${ANSI_RESET}`
+    );
     const rl = readline.createInterface({ input, output });
-    const answer = await rl.question("Proceed with this plan? (yes/no) ");
+    const answer = await rl.question(`${ANSI_GREEN}Proceed with this plan? (yes/no) ${ANSI_RESET}`);
     rl.close();
+    console.log(
+      `${ANSI_GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${ANSI_RESET}`
+    );
     return /^y(es)?$/i.test(answer.trim());
   }
 
@@ -933,9 +1167,15 @@ export class ReActOrchestrator {
     // Confirm phases with user in interactive mode
     const interactive = this.opts.interactive !== false;
     if (interactive) {
+        console.log(
+          `${ANSI_GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${ANSI_RESET}`
+        );
       const rl = readline.createInterface({ input, output });
-      const answer = await rl.question("Proceed with these phases? (yes/no) ");
+      const answer = await rl.question(`${ANSI_GREEN}Proceed with these phases? (yes/no) ${ANSI_RESET}`);
       rl.close();
+        console.log(
+          `${ANSI_GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${ANSI_RESET}`
+        );
       if (!/^y(es)?$/i.test(answer.trim())) {
         console.log("Phase plan rejected. Stopping.");
         this.lastOutcome = "plan_rejected";
@@ -1011,18 +1251,16 @@ export class ReActOrchestrator {
 
       // Persist phase-level task history to PostgreSQL (best-effort)
       try {
-        const pgHistory = new PostgresTaskHistory();
-        await pgHistory.append({
-          id: `phase_${sanitizedTaskName}_${phase.number}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-          timestamp: new Date().toISOString(),
+        const taskHistoryStore = new TaskHistoryStore();
+        await taskHistoryStore.save({
           task: `Phase ${phase.number}: ${phase.title}`,
           summary: phaseResult,
           iterations: phaseIterations,
           totalTokens: phaseTokens,
         });
-        await pgHistory.close();
+        await taskHistoryStore.close();
       } catch (err) {
-        console.warn("[PostgresTaskHistory] Failed to append phase history:", err instanceof Error ? err.message : String(err));
+        console.warn("[TaskHistoryStore] Failed to save phase history:", err instanceof Error ? err.message : String(err));
       }
 
       // Item 5b: Update WBS to mark this phase as done
@@ -1080,8 +1318,7 @@ export class ReActOrchestrator {
   }
 
   private async askContinue(taskDescription: string, maxIterations: number): Promise<boolean> {
-    const ANSI_GREEN = "\x1b[32m";
-    const ANSI_RESET = "\x1b[0m";
+
     const interactive = this.opts.interactive !== false; // default true
     if (!interactive) {
       // API context: auto-continue rather than hanging on stdin
@@ -1102,6 +1339,9 @@ export class ReActOrchestrator {
       `\n${ANSI_GREEN}Iteration limit reached for maxIterations [${maxIterations}]: "${taskDescription}".\nContinue for another round? (yes/no) ${ANSI_RESET}`
     );
     rl.close();
+    console.log(
+      `${ANSI_GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${ANSI_RESET}`
+    );
     return /^y(es)?$/i.test(answer.trim());
   }
 
@@ -1120,8 +1360,7 @@ export class ReActOrchestrator {
     toolCalls: string[],
     observations: string[]
   ): Promise<boolean> {
-    const ANSI_YELLOW = "\x1b[33m";
-    const ANSI_RESET = "\x1b[0m";
+
     const interactive = this.opts.interactive !== false; // default true
     if (!interactive) {
       console.log(`\nSubagent iteration limit reached (${iterationCount} iterations) — non-interactive mode, auto-continuing.`);
@@ -1161,14 +1400,40 @@ export class ReActOrchestrator {
    * user declines to continue after an iteration limit hit. This ensures the parent
    * orchestrator gets useful information about what was accomplished, rather than an
    * empty or generic fallback message.
+   *
+   * The method first tries to call the LLM to generate a structured report covering:
+   * what was accomplished, what was left undone, key decisions made, and blockers
+   * encountered. If the LLM call fails or returns empty, it falls back to a mechanical
+   * reconstruction of tool calls and observations.
    */
-  private synthesizeSubagentPartialReport(
+  private async synthesizeSubagentPartialReport(
     taskDescription: string,
     iterationCount: number,
     lastThought: string,
     toolCalls: string[],
-    observations: string[]
-  ): string {
+    observations: string[],
+    messages?: LlmMessage[]
+  ): Promise<string> {
+    // Try to call the LLM for a coherent summary first.
+    // Pass the full message history if available for richer context.
+    try {
+      const llmSummary = await this.callLlmForSummary(
+        taskDescription,
+        toolCalls,
+        observations,
+        lastThought,
+        iterationCount,
+        0,
+        messages // pass full conversation history for richer context
+      );
+      if (llmSummary && llmSummary.length > 10) {
+        return llmSummary;
+      }
+    } catch {
+      // LLM call failed — fall through to mechanical fallback
+    }
+
+    // Mechanical fallback: build a structured report from extracted data
     const parts: string[] = [];
     parts.push(`Subagent stopped: hit the iteration limit after ${iterationCount} iterations without reaching a final answer.`);
 

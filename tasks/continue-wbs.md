@@ -2,11 +2,11 @@
 
 - [x] Phase 1: Root Cause Analysis — Identify the Exact Failure Point
 Analyze the orchestrator's iteration-limit handler, `synthesizeReport()`, and the subagent completion path to pinpoint exactly where and why the summary report is lost. Trace the code paths for both top-level tasks and phase-planning subagents when the iteration limit is hit. Document the findings in `tasks/rca-postmortem-*.md` with timeline, root cause, contributing factors (with line numbers), causal chain, and prioritized corrective actions.
-- [ ] Phase 2: Fix the Subagent Iteration-Limit Handler
+- [x] Phase 2: Fix the Subagent Iteration-Limit Handler
 Update the orchestrator's subagent completion path (lines ~172-175) to extract meaningful information from the subagent's context before returning a fallback string. Instead of a hardcoded message, collect the subagent's tool call names, observations, and any partial results, then pass them to `synthesizeReport()` or a new `synthesizeSubagentReport()` method that calls the LLM to generate a coherent summary of what was accomplished vs. left undone.
-- [ ] Phase 3: Enhance `synthesizeReport()` with LLM-Based Summarization
+- [x] Phase 3: Enhance `synthesizeReport()` with LLM-Based Summarization
 Replace the mechanical concatenation in `synthesizeReport()` with an LLM call that produces a meaningful summary. The method should receive the full conversation history (tool calls, observations, user messages) and generate a structured report covering: what was accomplished, what was left undone, key decisions made, and any blockers encountered. Ensure this works for both top-level tasks and subagent contexts.
-- [ ] Phase 4: Add Partial-Success Tracking to the Orchestrator
+- [x] Phase 4: Add Partial-Success Tracking to the Orchestrator
 Introduce a `partialSuccess` field to the orchestrator's outcome tracking that captures what was accomplished before the iteration limit was hit. Update `lastOutcome` to support a `"partial_completion"` state. When the iteration limit is reached, the orchestrator should record the last N tool calls, their results, and any files modified, then pass this context to the enhanced `synthesizeReport()`.
-- [ ] Phase 5: Wire the API Routes for Graceful Degradation
+- [x] Phase 5: Wire the API Routes for Graceful Degradation
 Update `src/api/routes.ts` to replace the hardcoded `onIterationLimitReached: async () => false` with a handler that: (1) calls the enhanced `synthesizeReport()` to generate a partial-completion summary, (2) returns this summary to the client alongside the `limitation` field, and (3) respects the `continueOnLimit` option when the UI requests continuation. Add the `/api/v1/phase-reports` and `/api/v1/wbs` endpoints if they are still missing, and ensure the phase report store is wired into the orchestrator's iteration-limit path.

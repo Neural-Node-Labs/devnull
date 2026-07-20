@@ -318,7 +318,240 @@ No changes to the Dockerfile or docker-compose.yml are needed. The existing Post
 service already provides the database. The new tables are auto-created via `CREATE TABLE
 IF NOT EXISTS` on first use.
 
-## 11. Known Gaps / Honest Limitations
+## 11. Task History Data Model
+
+### 11.1 Purpose
+
+The task history data model defines how completed top-level tasks are persisted, queried, and
+displayed. It covers three storage backends (JSONL filesystem, Markdown filesystem, PostgreSQL)
+and the API/UI consumption layer.
+
+### 11.2 Core Interface
+
+Defined in `src/core/taskHistory.ts`:
+
+```typescript
+export interface TaskHistoryEntry {
+  id: string;           // Unique identifier, e.g. "task_1712345678901_a1b2c3"
+  task: string;         // Original task description
+  summary: string;      // What was accomplished
+  timestamp: string;    // ISO 8601 timestamp of completion
+  iterations: number;   // Total ReAct loop iterations
+  totalTokens?: number; // Cumulative token usage (prompt + completion)
+}
+```
+
+### 11.3 Storage Backends
+
+#### 11.3.1 JSONL Filesystem (`.agent/task-history.jsonl`)
+
+- **Format**: One JSON object per line (JSON Lines / NDJSON)
+- **Cap**: 200 entries (oldest dropped on append)
+- **Primary use**: CLI access, offline debugging, programmatic parsing
+- **Write path**: `appendTaskHistory()` in `src/core/taskHistory.ts`
+- **Read path**: `readTaskHistory()` in `src/core/taskHistory.ts`
+
+```jsonl
+{"id":"task_1712345678901_a1b2c3","task":"implement feature X","summary":"...","timestamp":"2025-07-17T10:30:00.000Z","iterations":15,"totalTokens":45000}
+```
+
+#### 11.3.2 Markdown Filesystem (`tasks/task_history.md`)
+
+- **Format**: Markdown with `##` headings per entry, `---` separators
+- **Cap**: 50 entries (oldest dropped on append)
+- **Primary use**: Human-readable, git-trackable, visible in workspace
+- **Write path**: `appendTaskHistory()` in `src/core/taskHistory.ts`
+- **Read path**: `parseMarkdownEntries()` in `src/core/taskHistory.ts` (fallback for `readTaskHistory()`)
+
+```markdown
+## Jul 17, 2025, 10:30:00 AM GMT — implement feature X
+
+**Summary:** Implemented the rate limiter with Redis backend, added tests, verified with load testing.
+
+**Stats:** 15 iterations, 45,000 tokens
+
+---
+```
+
+#### 11.3.3 PostgreSQL (`task_history` table)
+
+- **Format**: Relational table with indexed columns
+- **Primary use**: UI consumption, structured queries, search
+- **Write path**: `PostgresTaskHistory.append()` in `src/core/postgresTaskHistory.ts`
+- **Read path**: `PostgresTaskHistory.read()` / `PostgresTaskHistory.search()` in `src/core/postgresTaskHistory.ts`
+- **Best-effort**: Failures are logged but don't block execution
+
+```sql
+CREATE TABLE IF NOT EXISTS task_history (
+  id TEXT PRIMARY KEY,
+  task TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  timestamp TEXT NOT NULL,
+  iterations INTEGER DEFAULT 0,
+  total_tokens INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_history_timestamp ON task_history(timestamp DESC);
+```
+
+### 11.4 API Layer
+
+#### 11.4.1 API Types (`src/api/types.ts`)
+
+```typescript
+export interface TaskHistoryEntryResponse {
+  id: string;
+  task: string;
+  summary: string;
+  timestamp: string;
+  iterations: number;
+  totalTokens: number | null;
+}
+
+export interface TaskHistoryQuery {
+  limit?: number;
+}
+
+export interface TaskHistoryListResponse {
+  tasks: TaskHistoryEntryResponse[];
+}
+
+export interface TaskHistoryDetailResponse {
+  task: TaskHistoryEntryResponse;
+}
+```
+
+#### 11.4.2 API Endpoints (`src/api/routes.ts`)
+
+| Method | Path | Description | Auth |
+|---|---|---|---|
+| `GET` | `/api/v1/task-history` | List recent task history entries | Bearer token |
+| `GET` | `/api/v1/task-history/:id` | Get a specific task history entry | Bearer token |
+| `GET` | `/api/v1/task-history/:taskId/logs` | Get telemetry logs for a specific task | Bearer token |
+
+**Query Parameters for `GET /api/v1/task-history`:**
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `limit` | `number` | `10` | Max entries to return (newest first) |
+| `projectId` | `string` | active project | Filter by project |
+
+### 11.5 UI Consumption
+
+#### 11.5.1 Client API (`ui/src/api/client.ts`)
+
+```typescript
+async getTaskHistory(projectId?: string, limit = 10): Promise<ApiResponse<{ tasks: TaskHistoryEntry[] }>>
+```
+
+#### 11.5.2 TaskHistoryPage Component (`ui/src/pages/TaskHistoryPage.tsx`)
+
+The page renders each task history entry as a collapsible card with:
+
+1. **Header row** (always visible):
+   - Task description (truncated with ellipsis, full text in `title` attribute)
+   - Localized timestamp
+   - Token badge (color-coded per thresholds below)
+   - Iteration badge (color-coded per thresholds below)
+
+2. **Expanded section** (click to toggle):
+   - Summary text (pre-wrapped, max-height 300px with scroll)
+
+3. **Refresh button** to reload from API
+
+#### 11.5.3 Color-Coding Thresholds
+
+| Metric | Threshold | Color | CSS Color | Label |
+|---|---|---|---|---|
+| Tokens | > 1,000,000 | 🔴 Red | `#ef4444` | >1M |
+| Tokens | > 500,000 | 🟢 Green | `#22c55e` | >500K |
+| Tokens | ≤ 500,000 | 🔵 Blue | `#3b82f6` | <500K |
+| Iterations | > 100 | 🔴 Red | `#ef4444` | >100 |
+| Iterations | > 50 | 🟢 Green | `#22c55e` | >50 |
+| Iterations | ≤ 20 | 🔵 Blue | `#3b82f6` | <20 |
+
+### 11.6 Data Flow Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        CLI Layer                                     │
+│                                                                      │
+│  orchestrator.run() completes                                       │
+│       │                                                             │
+│       ├──► appendTaskHistory(cwd, entry)                            │
+│       │     ├──► .agent/task-history.jsonl  (JSONL, cap 200)        │
+│       │     └──► tasks/task_history.md      (Markdown, cap 50)      │
+│       │                                                             │
+│       └──► PostgresTaskHistory.append(entry)  (best-effort)         │
+│             └──► INSERT INTO task_history                           │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+                                    │
+┌─────────────────────────────────────────────────────────────────────┐
+│                        API Layer                                     │
+│                                                                      │
+│  GET /api/v1/task-history?limit=50                                  │
+│       │                                                             │
+│       └──► readTaskHistory(cwd, limit)                              │
+│             └──► Parse .agent/task-history.jsonl                    │
+│                   └──► Return TaskHistoryEntry[] as JSON            │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+                                    │
+┌─────────────────────────────────────────────────────────────────────┐
+│                        UI Layer                                      │
+│                                                                      │
+│  TaskHistoryPage mounts                                             │
+│       │                                                             │
+│       └──► api.getTaskHistory(undefined, 50)                        │
+│             └──► Render collapsible cards with color-coded badges   │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### 11.7 Existing Implementation Status
+
+The following components are **already implemented** and match this design:
+
+| Component | File | Status |
+|---|---|---|
+| `TaskHistoryEntry` interface | `src/core/taskHistory.ts` | ✅ Implemented |
+| `appendTaskHistory()` (JSONL + Markdown) | `src/core/taskHistory.ts` | ✅ Implemented |
+| `readTaskHistory()` (JSONL + Markdown fallback) | `src/core/taskHistory.ts` | ✅ Implemented |
+| `searchTaskHistory()` | `src/core/taskHistory.ts` | ✅ Implemented |
+| `PostgresTaskHistory` class | `src/core/postgresTaskHistory.ts` | ✅ Implemented |
+| `TaskHistoryStore` class (API layer) | `src/api/taskHistoryStore.ts` | ✅ Implemented |
+| `TaskHistoryEntryResponse` type | `src/api/types.ts` | ✅ Implemented |
+| `GET /api/v1/task-history` endpoint | `src/api/routes.ts` | ✅ Implemented |
+| `GET /api/v1/task-history/:taskId/logs` endpoint | `src/api/routes.ts` | ✅ Implemented |
+| `api.getTaskHistory()` client method | `ui/src/api/client.ts` | ✅ Implemented |
+| `TaskHistoryPage` component | `ui/src/pages/TaskHistoryPage.tsx` | ✅ Implemented |
+| Color-coded token/iteration badges | `ui/src/pages/TaskHistoryPage.tsx` | ✅ Implemented |
+| DB persistence call in orchestrator | `src/core/orchestrator.ts` | ✅ Implemented |
+
+### 11.8 Design Decisions
+
+1. **Dual filesystem + DB persistence**: The filesystem path (JSONL + Markdown) is always the
+   primary write target — it works without a database. The DB write is best-effort, with
+   failures logged but not blocking execution. This ensures the system works offline and in
+   environments without PostgreSQL.
+
+2. **JSONL over plain JSON**: JSON Lines format allows append-only writes without reading and
+   rewriting the entire file. Each line is independently parseable, making it resilient to
+   corruption (a single corrupt line doesn't break the whole file).
+
+3. **Markdown for human readability**: The `tasks/task_history.md` file is git-trackable and
+   human-readable directly in the workspace. It's the format users see when browsing the
+   project files.
+
+4. **Color-coded badges**: Token and iteration counts are color-coded in both the UI and CLI
+   to give immediate visual feedback about task complexity and cost. Thresholds are chosen
+   based on typical DeepSeek usage patterns.
+
+5. **Cap on entries**: Both filesystem backends have caps (200 for JSONL, 50 for Markdown) to
+   prevent unbounded file growth. Oldest entries are dropped on append.
+
+## 12. Known Gaps / Honest Limitations
 
 - **DB writes are best-effort, not transactional with file writes**: If the DB write
   fails after the file write succeeds, the data is inconsistent until the next sync.
