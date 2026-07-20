@@ -91,7 +91,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 # Non-root user
 # ---------------------------------------------------------------------------
 RUN addgroup -S devnull && adduser -S devnull -G devnull \
-    && mkdir -p /workspace \
+    && mkdir -p /workspace/.log \
     && chown -R devnull:devnull /workspace /opt/devnull
 
 USER devnull
