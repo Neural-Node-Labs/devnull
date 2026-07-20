@@ -1,9 +1,8 @@
-import pg from "pg";
-
-const { Pool } = pg;
+import type { DatabaseClient } from "../db/types.js";
+import { createConnection } from "../db/connection.js";
 
 /**
- * A WBS entry stored in PostgreSQL.
+ * A WBS entry stored in the database.
  */
 export interface WbsEntry {
   id: string;
@@ -17,46 +16,36 @@ export interface WbsEntry {
 }
 
 /**
- * PostgreSQL-backed store for WBS entries.
+ * Database-backed store for WBS entries.
  * Stores WBS entries with status tracking per phase.
  * Falls back gracefully if the database is unreachable.
+ *
+ * Accepts a DatabaseClient (SQLite or PostgreSQL) instead of creating its own connection.
  */
 export class WbsStore {
-  private pool: pg.Pool;
-  private initialized = false;
+  private db: DatabaseClient;
 
-  constructor(connectionString?: string) {
-    this.pool = new Pool({
-      connectionString: connectionString || process.env.DATABASE_URL,
-      max: 5,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 5000,
-    });
+  constructor(db?: DatabaseClient) {
+    this.db = db ?? createConnection();
   }
 
   async init(): Promise<void> {
-    if (this.initialized) return;
+    if (this.db.initialized) return;
     try {
-      const client = await this.pool.connect();
-      try {
-        await client.query(`
-          CREATE TABLE IF NOT EXISTS wbs_entries (
-            id TEXT PRIMARY KEY,
-            task_id TEXT NOT NULL,
-            task_description TEXT NOT NULL,
-            phase_number INTEGER NOT NULL,
-            phase_title TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'pending',
-            created_at TIMESTAMPTZ DEFAULT NOW(),
-            updated_at TIMESTAMPTZ DEFAULT NOW()
-          );
+      await this.db.query(`
+        CREATE TABLE IF NOT EXISTS wbs_entries (
+          id TEXT PRIMARY KEY,
+          task_id TEXT NOT NULL,
+          task_description TEXT NOT NULL,
+          phase_number INTEGER NOT NULL,
+          phase_title TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending',
+          created_at TEXT DEFAULT (datetime('now')),
+          updated_at TEXT DEFAULT (datetime('now'))
+        );
 
-          CREATE INDEX IF NOT EXISTS idx_wbs_entries_task_id ON wbs_entries(task_id);
-        `);
-        this.initialized = true;
-      } finally {
-        client.release();
-      }
+        CREATE INDEX IF NOT EXISTS idx_wbs_entries_task_id ON wbs_entries(task_id);
+      `);
     } catch (err) {
       console.warn("[WbsStore] Failed to initialize:", err instanceof Error ? err.message : String(err));
     }
@@ -67,33 +56,22 @@ export class WbsStore {
    */
   async saveBatch(entries: Omit<WbsEntry, "id" | "createdAt" | "updatedAt">[]): Promise<boolean> {
     try {
-      if (!this.initialized) await this.init();
+      if (!this.db.initialized) await this.init();
       const now = new Date().toISOString();
 
-      const client = await this.pool.connect();
-      try {
-        await client.query("BEGIN");
-
-        for (const entry of entries) {
-          const id = `wbs_${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${entry.phaseNumber}`;
-          await client.query(
-            `INSERT INTO wbs_entries (id, task_id, task_description, phase_number, phase_title, status, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-             ON CONFLICT (id) DO UPDATE SET
-               status = EXCLUDED.status,
-               updated_at = EXCLUDED.updated_at`,
-            [id, entry.taskId, entry.taskDescription, entry.phaseNumber, entry.phaseTitle, entry.status, now, now]
-          );
-        }
-
-        await client.query("COMMIT");
-        return true;
-      } catch (err) {
-        await client.query("ROLLBACK");
-        throw err;
-      } finally {
-        client.release();
+      for (const entry of entries) {
+        const id = `wbs_${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${entry.phaseNumber}`;
+        await this.db.query(
+          `INSERT INTO wbs_entries (id, task_id, task_description, phase_number, phase_title, status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (id) DO UPDATE SET
+             status = excluded.status,
+             updated_at = excluded.updated_at`,
+          [id, entry.taskId, entry.taskDescription, entry.phaseNumber, entry.phaseTitle, entry.status, now, now]
+        );
       }
+
+      return true;
     } catch (err) {
       console.warn("[WbsStore] Failed to saveBatch:", err instanceof Error ? err.message : String(err));
       return false;
@@ -105,12 +83,12 @@ export class WbsStore {
    */
   async get(id: string): Promise<WbsEntry | null> {
     try {
-      if (!this.initialized) await this.init();
-      const result = await this.pool.query(
+      if (!this.db.initialized) await this.init();
+      const result = await this.db.query<WbsEntry>(
         `SELECT id, task_id as "taskId", task_description as "taskDescription",
                 phase_number as "phaseNumber", phase_title as "phaseTitle",
                 status, created_at as "createdAt", updated_at as "updatedAt"
-         FROM wbs_entries WHERE id = $1`,
+         FROM wbs_entries WHERE id = ?`,
         [id]
       );
       return result.rows[0] ?? null;
@@ -125,11 +103,11 @@ export class WbsStore {
    */
   async updateStatus(taskId: string, phaseNumber: number, status: WbsEntry["status"]): Promise<boolean> {
     try {
-      if (!this.initialized) await this.init();
+      if (!this.db.initialized) await this.init();
       const now = new Date().toISOString();
-      const result = await this.pool.query(
-        `UPDATE wbs_entries SET status = $1, updated_at = $2
-         WHERE task_id = $3 AND phase_number = $4`,
+      const result = await this.db.query(
+        `UPDATE wbs_entries SET status = ?, updated_at = ?
+         WHERE task_id = ? AND phase_number = ?`,
         [status, now, taskId, phaseNumber]
       );
       return (result.rowCount ?? 0) > 0;
@@ -144,12 +122,12 @@ export class WbsStore {
    */
   async listByTask(taskId: string): Promise<WbsEntry[]> {
     try {
-      if (!this.initialized) await this.init();
-      const result = await this.pool.query(
+      if (!this.db.initialized) await this.init();
+      const result = await this.db.query<WbsEntry>(
         `SELECT id, task_id as "taskId", task_description as "taskDescription",
                 phase_number as "phaseNumber", phase_title as "phaseTitle",
                 status, created_at as "createdAt", updated_at as "updatedAt"
-         FROM wbs_entries WHERE task_id = $1 ORDER BY phase_number ASC`,
+         FROM wbs_entries WHERE task_id = ? ORDER BY phase_number ASC`,
         [taskId]
       );
       return result.rows;
@@ -161,7 +139,7 @@ export class WbsStore {
 
   async close(): Promise<void> {
     try {
-      await this.pool.end();
+      await this.db.close();
     } catch {
       // ignore close errors
     }

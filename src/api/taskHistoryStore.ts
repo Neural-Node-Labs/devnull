@@ -1,9 +1,8 @@
-import pg from "pg";
-
-const { Pool } = pg;
+import type { DatabaseClient } from "../db/types.js";
+import { createConnection } from "../db/connection.js";
 
 /**
- * A task history entry stored in PostgreSQL.
+ * A task history entry stored in the database.
  */
 export interface TaskHistoryRecord {
   id: string;
@@ -15,44 +14,34 @@ export interface TaskHistoryRecord {
 }
 
 /**
- * PostgreSQL-backed store for task history.
+ * Database-backed store for task history.
  * Stores task history entries with summary, token, and iteration tracking.
  * Falls back gracefully if the database is unreachable.
+ *
+ * Accepts a DatabaseClient (SQLite or PostgreSQL) instead of creating its own connection.
  */
 export class TaskHistoryStore {
-  private pool: pg.Pool;
-  private initialized = false;
+  private db: DatabaseClient;
 
-  constructor(connectionString?: string) {
-    this.pool = new Pool({
-      connectionString: connectionString || process.env.DATABASE_URL,
-      max: 5,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 5000,
-    });
+  constructor(db?: DatabaseClient) {
+    this.db = db ?? createConnection();
   }
 
   async init(): Promise<void> {
-    if (this.initialized) return;
+    if (this.db.initialized) return;
     try {
-      const client = await this.pool.connect();
-      try {
-        await client.query(`
-          CREATE TABLE IF NOT EXISTS task_history (
-            id TEXT PRIMARY KEY,
-            task TEXT NOT NULL,
-            summary TEXT NOT NULL,
-            timestamp TEXT NOT NULL,
-            iterations INTEGER DEFAULT 0,
-            total_tokens INTEGER
-          );
+      await this.db.query(`
+        CREATE TABLE IF NOT EXISTS task_history (
+          id TEXT PRIMARY KEY,
+          task TEXT NOT NULL,
+          summary TEXT NOT NULL,
+          timestamp TEXT NOT NULL,
+          iterations INTEGER DEFAULT 0,
+          total_tokens INTEGER
+        );
 
-          CREATE INDEX IF NOT EXISTS idx_task_history_timestamp ON task_history(timestamp DESC);
-        `);
-        this.initialized = true;
-      } finally {
-        client.release();
-      }
+        CREATE INDEX IF NOT EXISTS idx_task_history_timestamp ON task_history(timestamp DESC);
+      `);
     } catch (err) {
       console.warn("[TaskHistoryStore] Failed to initialize:", err instanceof Error ? err.message : String(err));
     }
@@ -63,13 +52,13 @@ export class TaskHistoryStore {
    */
   async save(entry: Omit<TaskHistoryRecord, "id" | "timestamp">): Promise<TaskHistoryRecord | null> {
     try {
-      if (!this.initialized) await this.init();
+      if (!this.db.initialized) await this.init();
       const id = `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const timestamp = new Date().toISOString();
 
-      await this.pool.query(
+      await this.db.query(
         `INSERT INTO task_history (id, task, summary, timestamp, iterations, total_tokens)
-         VALUES ($1, $2, $3, $4, $5, $6)
+         VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET
            task = EXCLUDED.task,
            summary = EXCLUDED.summary,
@@ -91,10 +80,10 @@ export class TaskHistoryStore {
    */
   async getById(id: string): Promise<TaskHistoryRecord | null> {
     try {
-      if (!this.initialized) await this.init();
-      const result = await this.pool.query(
+      if (!this.db.initialized) await this.init();
+      const result = await this.db.query<TaskHistoryRecord>(
         `SELECT id, task, summary, timestamp, iterations, total_tokens as "totalTokens"
-         FROM task_history WHERE id = $1`,
+         FROM task_history WHERE id = ?`,
         [id]
       );
       if (!result.rows[0]) return null;
@@ -118,10 +107,10 @@ export class TaskHistoryStore {
    */
   async list(limit = 10): Promise<TaskHistoryRecord[]> {
     try {
-      if (!this.initialized) await this.init();
-      const result = await this.pool.query(
+      if (!this.db.initialized) await this.init();
+      const result = await this.db.query<TaskHistoryRecord>(
         `SELECT id, task, summary, timestamp, iterations, total_tokens as "totalTokens"
-         FROM task_history ORDER BY timestamp DESC LIMIT $1`,
+         FROM task_history ORDER BY timestamp DESC LIMIT ?`,
         [limit]
       );
       return result.rows.map((row: any) => ({
@@ -140,7 +129,7 @@ export class TaskHistoryStore {
 
   async close(): Promise<void> {
     try {
-      await this.pool.end();
+      await this.db.close();
     } catch {
       // ignore close errors
     }

@@ -1,27 +1,22 @@
-import pg from "pg";
+import type { DatabaseClient } from "../db/types.js";
+import { createConnection } from "../db/connection.js";
 import { TelemetryInterface, ReActStep } from "../core/types.js";
 
-const { Pool } = pg;
-
 /**
- * PostgreSQL-backed telemetry implementation.
- * Stores ReAct steps, LLM calls, and errors in PostgreSQL tables.
+ * Database-backed telemetry implementation.
+ * Stores ReAct steps, LLM calls, and errors in database tables.
  * Falls back gracefully if the database is unreachable (logs to console).
+ *
+ * Accepts a DatabaseClient (SQLite or PostgreSQL) instead of creating its own connection.
  *
  * Schema is auto-created on first connection via init().
  */
 export class PostgresTelemetry implements TelemetryInterface {
-  private pool: pg.Pool;
+  private db: DatabaseClient;
   private initialized = false;
-  private fallbackLog: Array<{ type: string; data: unknown }> = [];
 
-  constructor(connectionString?: string) {
-    this.pool = new Pool({
-      connectionString: connectionString || process.env.DATABASE_URL,
-      max: 5,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 5000,
-    });
+  constructor(db?: DatabaseClient) {
+    this.db = db ?? createConnection();
   }
 
   /**
@@ -31,48 +26,43 @@ export class PostgresTelemetry implements TelemetryInterface {
   async init(): Promise<void> {
     if (this.initialized) return;
     try {
-      const client = await this.pool.connect();
-      try {
-        await client.query(`
-          CREATE TABLE IF NOT EXISTS telemetry_logs (
-            id SERIAL PRIMARY KEY,
-            task_id TEXT,
-            iteration INTEGER,
-            phase TEXT,
-            thought TEXT,
-            action_tool TEXT,
-            action_input JSONB,
-            observation JSONB,
-            score INTEGER,
-            timestamp TIMESTAMPTZ DEFAULT NOW()
-          );
+      await this.db.query(`
+        CREATE TABLE IF NOT EXISTS telemetry_logs (
+          id SERIAL PRIMARY KEY,
+          task_id TEXT,
+          iteration INTEGER,
+          phase TEXT,
+          thought TEXT,
+          action_tool TEXT,
+          action_input TEXT,
+          observation TEXT,
+          score INTEGER,
+          timestamp TEXT DEFAULT (datetime('now'))
+        );
 
-          CREATE TABLE IF NOT EXISTS telemetry_llm_calls (
-            id SERIAL PRIMARY KEY,
-            task_id TEXT,
-            request JSONB,
-            response JSONB,
-            timestamp TIMESTAMPTZ DEFAULT NOW()
-          );
+        CREATE TABLE IF NOT EXISTS telemetry_llm_calls (
+          id SERIAL PRIMARY KEY,
+          task_id TEXT,
+          request TEXT,
+          response TEXT,
+          timestamp TEXT DEFAULT (datetime('now'))
+        );
 
-          CREATE TABLE IF NOT EXISTS telemetry_errors (
-            id SERIAL PRIMARY KEY,
-            task_id TEXT,
-            context TEXT,
-            error_message TEXT,
-            error_stack TEXT,
-            timestamp TIMESTAMPTZ DEFAULT NOW()
-          );
+        CREATE TABLE IF NOT EXISTS telemetry_errors (
+          id SERIAL PRIMARY KEY,
+          task_id TEXT,
+          context TEXT,
+          error_message TEXT,
+          error_stack TEXT,
+          timestamp TEXT DEFAULT (datetime('now'))
+        );
 
-          CREATE INDEX IF NOT EXISTS idx_telemetry_logs_task_id ON telemetry_logs(task_id);
-          CREATE INDEX IF NOT EXISTS idx_telemetry_logs_timestamp ON telemetry_logs(timestamp);
-          CREATE INDEX IF NOT EXISTS idx_telemetry_llm_calls_task_id ON telemetry_llm_calls(task_id);
-          CREATE INDEX IF NOT EXISTS idx_telemetry_errors_task_id ON telemetry_errors(task_id);
-        `);
-        this.initialized = true;
-      } finally {
-        client.release();
-      }
+        CREATE INDEX IF NOT EXISTS idx_telemetry_logs_task_id ON telemetry_logs(task_id);
+        CREATE INDEX IF NOT EXISTS idx_telemetry_logs_timestamp ON telemetry_logs(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_telemetry_llm_calls_task_id ON telemetry_llm_calls(task_id);
+        CREATE INDEX IF NOT EXISTS idx_telemetry_errors_task_id ON telemetry_errors(task_id);
+      `);
+      this.initialized = true;
     } catch (err) {
       console.warn("[PostgresTelemetry] Failed to initialize database schema, using fallback:", err instanceof Error ? err.message : String(err));
     }
@@ -81,9 +71,9 @@ export class PostgresTelemetry implements TelemetryInterface {
   private async query(text: string, params?: unknown[]): Promise<void> {
     try {
       if (!this.initialized) await this.init();
-      await this.pool.query(text, params);
+      await this.db.query(text, params);
     } catch (err) {
-      // Fallback: store in memory and log to console
+      // Fallback: log to console
       console.warn("[PostgresTelemetry] Query failed, falling back:", err instanceof Error ? err.message : String(err));
     }
   }
@@ -91,7 +81,7 @@ export class PostgresTelemetry implements TelemetryInterface {
   async logThought(step: ReActStep): Promise<void> {
     await this.query(
       `INSERT INTO telemetry_logs (task_id, iteration, phase, thought, action_tool, action_input, observation, score)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         (step as any).taskId || null,
         step.iteration,
@@ -107,7 +97,7 @@ export class PostgresTelemetry implements TelemetryInterface {
 
   async logLlmCall(request: unknown, response: unknown): Promise<void> {
     await this.query(
-      `INSERT INTO telemetry_llm_calls (request, response) VALUES ($1, $2)`,
+      `INSERT INTO telemetry_llm_calls (request, response) VALUES (?, ?)`,
       [JSON.stringify(request), JSON.stringify(response)]
     );
   }
@@ -117,7 +107,7 @@ export class PostgresTelemetry implements TelemetryInterface {
       ? { message: err.message, stack: err.stack }
       : { err };
     await this.query(
-      `INSERT INTO telemetry_errors (context, error_message, error_stack) VALUES ($1, $2, $3)`,
+      `INSERT INTO telemetry_errors (context, error_message, error_stack) VALUES (?, ?, ?)`,
       [context || null, serialized.message || null, serialized.stack || null]
     );
   }
@@ -128,8 +118,8 @@ export class PostgresTelemetry implements TelemetryInterface {
   async getLogsForTask(taskId: string, limit = 100): Promise<ReActStep[]> {
     try {
       if (!this.initialized) await this.init();
-      const result = await this.pool.query(
-        `SELECT * FROM telemetry_logs WHERE task_id = $1 ORDER BY timestamp DESC LIMIT $2`,
+      const result = await this.db.query<any>(
+        `SELECT * FROM telemetry_logs WHERE task_id = ? ORDER BY timestamp DESC LIMIT ?`,
         [taskId, limit]
       );
       return result.rows.map((row: any) => ({
@@ -154,28 +144,27 @@ export class PostgresTelemetry implements TelemetryInterface {
       if (!this.initialized) await this.init();
       let query = "SELECT * FROM telemetry_logs WHERE 1=1";
       const params: unknown[] = [];
-      let paramIndex = 1;
 
       if (opts?.taskId) {
-        query += ` AND task_id = $${paramIndex++}`;
+        query += " AND task_id = ?";
         params.push(opts.taskId);
       }
 
       query += " ORDER BY timestamp DESC";
 
       if (opts?.limit) {
-        query += ` LIMIT $${paramIndex++}`;
+        query += " LIMIT ?";
         params.push(opts.limit);
       } else {
         query += " LIMIT 100";
       }
 
       if (opts?.offset) {
-        query += ` OFFSET $${paramIndex++}`;
+        query += " OFFSET ?";
         params.push(opts.offset);
       }
 
-      const result = await this.pool.query(query, params);
+      const result = await this.db.query(query, params);
       return result.rows;
     } catch (err) {
       console.warn("[PostgresTelemetry] Failed to get logs:", err instanceof Error ? err.message : String(err));
@@ -184,11 +173,11 @@ export class PostgresTelemetry implements TelemetryInterface {
   }
 
   /**
-   * Close the database connection pool.
+   * Close the database connection.
    */
   async close(): Promise<void> {
     try {
-      await this.pool.end();
+      await this.db.close();
     } catch {
       // ignore close errors
     }

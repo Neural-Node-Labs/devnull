@@ -7,6 +7,169 @@ as the default execution mode, dual persistence (filesystem + PostgreSQL) for ta
 phase reports, and WBS entries, and color-coded token/iteration statistics in both CLI
 and UI output.
 
+---
+
+## Appendix B: Database Abstraction Layer Design
+
+### B.1 Purpose
+
+Provide a unified database interface that supports both SQLite (default, zero-config) and
+PostgreSQL (production-grade), switchable via a single environment variable. All database
+operations go through the `DatabaseClient` interface, enabling transparent backend swapping
+without code changes.
+
+### B.2 Interface Design
+
+```typescript
+export interface DatabaseClient {
+  /** Initialize the database (create tables, etc.). Safe to call multiple times. */
+  init(): Promise<void>;
+
+  /** Execute a query with optional parameters. Returns rows and count. */
+  query<T = any>(text: string, params?: unknown[]): Promise<QueryResult<T>>;
+
+  /** Close the database connection / pool. */
+  close(): Promise<void>;
+
+  /** Whether the database has been initialized. */
+  readonly initialized: boolean;
+}
+
+export interface QueryResult<T = any> {
+  rows: T[];
+  rowCount: number | null;
+}
+
+export type DatabaseType = "sqlite" | "postgres";
+```
+
+**Design principles:**
+1. **Minimal surface area** — 3 methods + 1 property. Easy to implement, easy to mock.
+2. **Async-first** — All methods return Promises, even SQLite (wraps synchronous better-sqlite3).
+3. **Generic rows** — `query<T>()` returns typed rows via TypeScript generics.
+4. **No ORM** — Raw SQL with parameterized queries. No query builder, no migration framework.
+5. **Graceful degradation** — All implementations catch errors, log warnings, return safe defaults.
+
+### B.3 Connection Factory
+
+```typescript
+// Synchronous factory — creates client, does NOT call init()
+createConnection(config?: DatabaseConfig): DatabaseClient
+
+// Async convenience — loads config + creates + inits
+createConnectionAsync(): Promise<DatabaseClient>
+```
+
+The factory reads `DATABASE_TYPE` from environment (defaults to `"sqlite"`) and returns the
+appropriate implementation. Stores accept an optional `DatabaseClient` in their constructor;
+if omitted, they call `createConnection()` with default config.
+
+### B.4 SQLite Implementation
+
+**File**: `src/db/sqliteClient.ts`
+**Library**: `better-sqlite3` (synchronous, fast, zero-config)
+
+Key behaviors:
+- **WAL mode**: `PRAGMA journal_mode = WAL` for concurrent read performance
+- **Foreign keys**: `PRAGMA foreign_keys = ON`
+- **SQL translation**: Automatic PostgreSQL→SQLite dialect conversion via `translateSql()`
+- **File path**: Defaults to `~/.devnull/data/devnull.db`, configurable via `DATABASE_SQLITE_PATH`
+
+### B.5 PostgreSQL Implementation
+
+**File**: `src/db/postgresClient.ts`
+**Library**: `pg.Pool` (connection pooling)
+
+Key behaviors:
+- **Connection string**: Supports `DATABASE_URL` (overrides individual params)
+- **Individual params**: `DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_NAME`, `DATABASE_USER`, `DATABASE_PASSWORD`
+- **SSL**: `DATABASE_SSL=true` enables SSL with `rejectUnauthorized: false`
+- **Pool config**: Configurable `max`, `idleTimeoutMillis`, `connectionTimeoutMillis`
+- **init()**: Verifies connectivity with `SELECT 1` (does NOT manage schema)
+
+### B.6 Store Pattern
+
+All 7 database-backed stores follow an identical pattern:
+
+```typescript
+class SomeStore {
+  private db: DatabaseClient;
+
+  constructor(db?: DatabaseClient) {
+    this.db = db ?? createConnection();  // Accept injected client or create default
+  }
+
+  async init(): Promise<void> {
+    if (this.db.initialized) return;     // Guard against re-init
+    // CREATE TABLE IF NOT EXISTS ...
+  }
+
+  // CRUD methods with try/catch, graceful fallback, console.warn on failure
+}
+```
+
+### B.7 Configuration Schema
+
+```typescript
+export interface DatabaseConfig {
+  type: DatabaseType;                    // "sqlite" | "postgres"
+  sqlitePath: string;                    // Default: ~/.devnull/data/devnull.db
+  postgresUrl?: string;                  // Full connection string
+  postgresHost: string;                  // Default: localhost
+  postgresPort: number;                  // Default: 5432
+  postgresDatabase: string;              // Default: devnull
+  postgresUser: string;                  // Default: devnull
+  postgresPassword: string;              // Default: devnull_pass
+  postgresSsl: boolean;                  // Default: false
+  postgresMax: number;                   // Default: 5
+  postgresIdleTimeoutMillis: number;     // Default: 30000
+  postgresConnectionTimeoutMillis: number; // Default: 5000
+}
+```
+
+### B.8 Data Flow
+
+```
+.env → process.env → loadDatabaseConfig() → DatabaseConfig
+                                                  │
+                                          createConnection()
+                                              │       │
+                                        SqliteClient  PostgresClient
+                                              │       │
+                                          query()     query()
+                                              │       │
+                                        better-sqlite3  pg.Pool
+                                              │       │
+                                        devnull.db    PostgreSQL
+```
+
+### B.9 Error Handling Strategy
+
+| Scenario | Behavior |
+|---|---|
+| DB unreachable on init | Warning logged, `initialized` stays `false` |
+| Query fails | Warning logged, empty `{ rows: [], rowCount: 0 }` returned |
+| DB becomes unreachable mid-operation | Next query fails gracefully, warning logged |
+| Close fails | Error silently ignored |
+
+### B.10 Testing Strategy
+
+| Concern | Approach |
+|---|---|
+| Unit tests with SQLite | Use `SqliteClient` with `:memory:` path (in-memory SQLite) |
+| Unit tests with PostgreSQL | Use `PostgresClient` with test database or mock the interface |
+| Graceful fallback | Pass unreachable connection string, verify no crash |
+| SQL dialect translation | Unit test `translateSql()` directly |
+| Store behavior | Inject mock `DatabaseClient` to verify CRUD logic |
+
+### B.11 Known Gaps
+
+1. **Duplicate `task_history` table**: Both `PostgresTaskHistory` (src/core/) and `TaskHistoryStore` (src/api/) manage the same table. Consolidate into `TaskHistoryStore`.
+2. **`RETURNING *` stripped**: SQLite translation strips `RETURNING *` — use separate SELECT if needed.
+3. **No centralized migration**: Schema changes require updating each store's `init()`.
+4. **No connection pooling across stores**: Each store creates its own connection when no client is injected.
+
+
 ## 2. Business Logic
 
 ### 2.1 Phase Planning Flow

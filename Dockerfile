@@ -6,11 +6,22 @@
 # Get the current digest: docker pull node:20-alpine && docker inspect --format='{{index .RepoDigests 0}}' node:20-alpine
 # =============================================================================
 ARG NODE_IMAGE=node:20-alpine
+ARG VERSION=0.2.0
+ARG BUILD_DATE
 
 # =============================================================================
 # Stage 1 — builder: compile TypeScript, includes devDependencies
 # =============================================================================
 FROM ${NODE_IMAGE} AS builder
+
+LABEL \
+    org.opencontainers.image.title="devnull (builder)" \
+    org.opencontainers.image.description="devnull ReAct CLI agent — build stage" \
+    org.opencontainers.image.source="https://github.com/neural-node-labs/devnull" \
+    org.opencontainers.image.version="${VERSION}" \
+    org.opencontainers.image.created="${BUILD_DATE}" \
+    org.opencontainers.image.authors="Sir John M. Nueva" \
+    org.opencontainers.image.licenses="LicenseRef-Proprietary"
 
 WORKDIR /build
 
@@ -29,6 +40,16 @@ RUN npm run build
 # Stage 2 — runtime: minimal image, production deps only, non-root
 # =============================================================================
 FROM ${NODE_IMAGE}
+
+LABEL \
+    org.opencontainers.image.title="devnull" \
+    org.opencontainers.image.description="devnull ReAct CLI agent — runtime image" \
+    org.opencontainers.image.source="https://github.com/neural-node-labs/devnull" \
+    org.opencontainers.image.version="${VERSION}" \
+    org.opencontainers.image.created="${BUILD_DATE}" \
+    org.opencontainers.image.authors="Sir John M. Nueva" \
+    org.opencontainers.image.licenses="LicenseRef-Proprietary"
+    org.opencontainers.image.base.name="${NODE_IMAGE}"
 
 # ---------------------------------------------------------------------------
 # Install runtime system dependencies
