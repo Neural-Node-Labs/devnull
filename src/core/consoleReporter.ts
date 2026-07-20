@@ -145,6 +145,22 @@ export function reportUsage(
   console.log(`${prefix(indent)}${color("🪙", ANSI.yellow)} ${color(line, ANSI.dim)}`);
 }
 
+/**
+ * Color-coded per-phase stats, printed after each phase completes in phase-planning mode.
+ * Token count: red if >1M, green if >500K, blue if <500K.
+ * Iteration count: red if >100, green if >50, blue if <20.
+ */
+export function reportPhaseStats(phaseNumber: number, phaseTitle: string, tokens: number, iterations: number, indent = 0): void {
+  const tokenColor = tokens > 1_000_000 ? ANSI.red : tokens > 500_000 ? ANSI.green : ANSI.blue;
+  const iterColor = iterations > 100 ? ANSI.red : iterations > 50 ? ANSI.green : ANSI.blue;
+  const p = prefix(indent);
+  console.log(
+    `${p}${color("📊 Phase", ANSI.bold)} ${color(`${phaseNumber}: ${phaseTitle}`, ANSI.brightCyan)} — ` +
+    `${color(`${tokens.toLocaleString()} tokens`, tokenColor)} · ` +
+    `${color(`${iterations} iterations`, iterColor)}`
+  );
+}
+
 /** End-of-run summary, printed once after the final answer. */
 export function reportTotalUsage(
   cumulative: { promptTokens: number; completionTokens: number; totalTokens: number; reasoningTokens?: number },

@@ -17,6 +17,7 @@ interface PersistedChatState {
   input: string;
   planMode: "auto" | "always" | "never";
   fullContextToken: boolean;
+  phasePlanning: boolean;
   isolatedWorkspace: boolean;
   maxIterations: number | "";
   showAdvanced: boolean;
@@ -74,6 +75,7 @@ export function ChatPage() {
   const [input, setInput] = useState(initialInput);
   const [planMode, setPlanMode] = useState<"auto" | "always" | "never">(savedState?.planMode ?? "always");
   const [fullContextToken, setFullContextToken] = useState(savedState?.fullContextToken ?? false);
+  const [phasePlanning, setPhasePlanning] = useState(savedState?.phasePlanning ?? false);
   const [isolatedWorkspace, setIsolatedWorkspace] = useState(savedState?.isolatedWorkspace ?? false);
   const [maxIterations, setMaxIterations] = useState<number | "">(savedState?.maxIterations ?? "");
   const [showAdvanced, setShowAdvanced] = useState(savedState?.showAdvanced ?? false);
@@ -96,6 +98,7 @@ export function ChatPage() {
       input,
       planMode,
       fullContextToken,
+      phasePlanning,
       isolatedWorkspace,
       maxIterations,
       showAdvanced,
@@ -103,7 +106,7 @@ export function ChatPage() {
       sessionId,
       lastTaskText,
     });
-  }, [messages, input, planMode, fullContextToken, isolatedWorkspace, maxIterations, showAdvanced, currentPlan, sessionId, lastTaskText]);
+  }, [messages, input, planMode, fullContextToken, phasePlanning, isolatedWorkspace, maxIterations, showAdvanced, currentPlan, sessionId, lastTaskText]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -123,7 +126,7 @@ export function ChatPage() {
   }, [urlTask]);
 
   const buildOptions = (): ChatOptions => {
-    const opts: ChatOptions = { planMode };
+    const opts: ChatOptions = { planMode, phasePlanning };
     if (fullContextToken) opts.fullContextToken = true;
     if (isolatedWorkspace) opts.isolatedWorkspace = true;
     if (maxIterations !== "" && maxIterations > 0) opts.maxIterations = maxIterations;
@@ -514,6 +517,10 @@ export function ChatPage() {
             <label style={checkboxLabel}>
               <input type="checkbox" checked={fullContextToken} onChange={(e) => setFullContextToken(e.target.checked)} />
               Full context mode
+            </label>
+            <label style={checkboxLabel}>
+              <input type="checkbox" checked={phasePlanning} onChange={(e) => setPhasePlanning(e.target.checked)} />
+              Phase planning
             </label>
             <label style={checkboxLabel}>
               <input type="checkbox" checked={isolatedWorkspace} onChange={(e) => setIsolatedWorkspace(e.target.checked)} />

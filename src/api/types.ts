@@ -148,3 +148,56 @@ export interface LoginResponse {
   role: "admin" | "user";
 }
 
+// ─── Phase Report Types ──────────────────────────────────────────────────
+
+/** A phase report entry returned by the API. */
+export interface PhaseReportEntry {
+  id: string;
+  taskId: string;
+  phaseNumber: number;
+  phaseTitle: string;
+  content: string;
+  tokens: number;
+  iterations: number;
+  createdAt: string;
+}
+
+/** GET /api/v1/phase-reports query params. */
+export interface PhaseReportsQuery {
+  taskId?: string;
+}
+
+/** GET /api/v1/phase-reports response data. */
+export interface PhaseReportsResponse {
+  reports: PhaseReportEntry[];
+}
+
+// ─── WBS Types ───────────────────────────────────────────────────────────
+
+/** A WBS entry returned by the API. */
+export interface WbsEntryResponse {
+  id: string;
+  taskId: string;
+  taskDescription: string;
+  phaseNumber: number;
+  phaseTitle: string;
+  status: "pending" | "in_progress" | "completed" | "failed" | "skipped";
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** GET /api/v1/wbs query params. */
+export interface WbsQuery {
+  taskId?: string;
+}
+
+/** GET /api/v1/wbs response data. */
+export interface WbsResponse {
+  entries: WbsEntryResponse[];
+}
+
+/** PUT /api/v1/wbs/:id/status request body. */
+export interface UpdateWbsStatusRequest {
+  status: "pending" | "in_progress" | "completed" | "failed" | "skipped";
+}
+

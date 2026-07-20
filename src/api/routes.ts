@@ -161,7 +161,8 @@ export function createRouter(): Router {
     if (maxIterations) opts.maxIterations = maxIterations;
     if (isolatedWorkspace) opts.isolatedWorkspace = true;
     if (continueOnLimit) opts.continueOnLimit = true;
-    if (phasePlanning) opts.phasePlanning = true;
+    // Map API's phasePlanning (true = enable) to orchestrator's singlePhase (false = enable)
+    if (phasePlanning === false) opts.singlePhase = true;
 
     const orchestrator = new ReActOrchestrator(llm, telemetry, opts);
 
@@ -231,6 +232,7 @@ export function createRouter(): Router {
     maxIterations?: number;
     isolatedWorkspace: boolean;
     continueOnLimit?: boolean;
+    phasePlanning?: boolean;
     createdAt: number;
   }
   const planSessions = new Map<string, PlanSession>();
@@ -259,7 +261,8 @@ export function createRouter(): Router {
     if (fullContextToken) opts.fullContextToken = true;
     if (maxIterations) opts.maxIterations = maxIterations;
     if (isolatedWorkspace) opts.isolatedWorkspace = true;
-    if (phasePlanning) opts.phasePlanning = true;
+    // Map API's phasePlanning (true = enable) to orchestrator's singlePhase (false = enable)
+    if (phasePlanning === false) opts.singlePhase = true;
     const orchestrator = new ReActOrchestrator(llm, telemetry, opts);
 
     try {
