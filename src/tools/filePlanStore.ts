@@ -115,8 +115,9 @@ export class FilePlanStore {
    * Update a task's status.
    */
   async updateTaskStatus(taskId: string, status: TaskStatus): Promise<boolean> {
-    const { planFile, data } = this.findTaskFile(taskId);
-    if (!planFile || !data) return false;
+    const found = this.findTaskFile(taskId);
+    if (!found) return false;
+    const { planFile, data } = found;
 
     const task = data.tasks.find((t) => t.id === taskId);
     if (!task) return false;
@@ -156,8 +157,9 @@ export class FilePlanStore {
    * Delete a task from a plan.
    */
   async deleteTask(taskId: string): Promise<boolean> {
-    const { planFile, data } = this.findTaskFile(taskId);
-    if (!planFile || !data) return false;
+    const found = this.findTaskFile(taskId);
+    if (!found) return false;
+    const { planFile, data } = found;
 
     const idx = data.tasks.findIndex((t) => t.id === taskId);
     if (idx === -1) return false;
