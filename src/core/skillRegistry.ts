@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import yaml from "js-yaml";
 import { LoadedSkill, SkillHeader } from "./types.js";
+import { resolveConfigPath } from "../config/loadConfig.js";
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/;
 
@@ -21,7 +22,7 @@ export class SkillRegistry {
       this.skillDir = skillDir;
       return;
     }
-    const cwdSkills = path.join(process.cwd(), "agent", "skills");
+    const cwdSkills = path.join(resolveConfigPath(), "skills");
     if (fs.existsSync(cwdSkills)) {
       this.skillDir = cwdSkills;
       return;
@@ -45,6 +46,7 @@ export class SkillRegistry {
     if (!fs.existsSync(this.skillDir)) return [];
 
     const dirs = fs.readdirSync(this.skillDir, { withFileTypes: true }).filter((d) => d.isDirectory());
+    let countSkills=0;
     for (const dir of dirs) {
       const skillPath = path.join(this.skillDir, dir.name, "SKILL.md");
       if (!fs.existsSync(skillPath)) continue;
@@ -56,7 +58,9 @@ export class SkillRegistry {
       const header = yaml.load(match[1]) as SkillHeader;
       this.headers.set(header.name, header);
       this.paths.set(header.name, skillPath);
+      countSkills++;
     }
+    //console.log(`Skills count: ${countSkills}`)
     return [...this.headers.values()];
   }
 
