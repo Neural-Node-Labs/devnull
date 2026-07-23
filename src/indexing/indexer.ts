@@ -4,7 +4,7 @@ import { globTool } from "../tools/globTool.js";
 import { loadIgnoreRules } from "./ignoreRules.js";
 import { IndexEntry, IndexFile } from "../core/types.js";
 
-const MAX_DUMP_BYTES = 500 * 1024; // 500KB hard ceiling per dump file
+const MAX_DUMP_BYTES = 450 * 1024; // 450KB soft ceiling — stay well under 500KB limit
 const INDEX_DIR = ".agent/index";
 
 /**
@@ -12,9 +12,15 @@ const INDEX_DIR = ".agent/index";
  * file's content into chunked index00x.dump files, each marked so the original file can be
  * reconstructed, while index.json tracks filename -> (dump file, start line, end line).
  */
-export async function buildIndex(cwd: string = process.cwd()): Promise<IndexFile> {
+export async function buildIndex(cwd: string = process.cwd(), force: boolean = true): Promise<IndexFile> {
   const indexDirAbs = path.join(cwd, INDEX_DIR);
   fs.mkdirSync(indexDirAbs, { recursive: true });
+
+  // Staleness check: if not forced and index is fresh, return cached
+  if (!force && !isIndexStale(cwd)) {
+    const cached = getCachedIndex(cwd);
+    if (cached) return cached;
+  }
 
   // fresh rebuild: clear old dump files
   for (const f of fs.readdirSync(indexDirAbs)) {
@@ -62,6 +68,7 @@ export async function buildIndex(cwd: string = process.cwd()): Promise<IndexFile
     currentDumpSize += blockBytes;
     const endLine = currentLine - 1; // exclude the end-marker line
 
+    const now = new Date().toISOString();
     entries.push({
       filename: path.basename(relPath),
       filepath: relPath,
@@ -69,11 +76,13 @@ export async function buildIndex(cwd: string = process.cwd()): Promise<IndexFile
       dumpFile: dumpFileName(dumpIndex),
       startLine,
       endLine,
+      lastIndexed: now,
     });
   }
   currentStream.end();
 
-  const indexFile: IndexFile = { generatedAt: new Date().toISOString(), entries };
+  const now = new Date().toISOString();
+  const indexFile: IndexFile = { generatedAt: now, lastIndexed: now, entries };
   fs.writeFileSync(path.join(indexDirAbs, "index.json"), JSON.stringify(indexFile, null, 2), "utf-8");
   return indexFile;
 }
@@ -90,6 +99,63 @@ export function readFromIndex(filepath: string, cwd: string = process.cwd()): st
   const dumpPath = path.join(cwd, INDEX_DIR, entry.dumpFile);
   const lines = fs.readFileSync(dumpPath, "utf-8").split("\n");
   return lines.slice(entry.startLine - 1, entry.endLine).join("\n");
+}
+
+/**
+ * Returns the cached index if it exists and is fresh (no files changed since last index).
+ * Returns undefined if no index exists.
+ */
+export function getCachedIndex(cwd: string = process.cwd()): IndexFile | undefined {
+  const indexPath = path.join(cwd, INDEX_DIR, "index.json");
+  if (!fs.existsSync(indexPath)) return undefined;
+  try {
+    return JSON.parse(fs.readFileSync(indexPath, "utf-8")) as IndexFile;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Checks whether the cached index is stale by comparing file hashes.
+ * Returns true if:
+ *  - No index exists
+ *  - Any indexed file has changed (hash mismatch)
+ *  - The index is older than 5 minutes (configurable via staleThresholdMs)
+ * Returns false if the index is still fresh.
+ */
+export function isIndexStale(cwd: string = process.cwd(), staleThresholdMs: number = 5 * 60 * 1000): boolean {
+  const indexPath = path.join(cwd, INDEX_DIR, "index.json");
+  if (!fs.existsSync(indexPath)) return true;
+
+  let index: IndexFile;
+  try {
+    index = JSON.parse(fs.readFileSync(indexPath, "utf-8")) as IndexFile;
+  } catch {
+    return true;
+  }
+
+  // Check time-based staleness first
+  if (index.lastIndexed) {
+    const elapsed = Date.now() - new Date(index.lastIndexed).getTime();
+    if (elapsed < staleThresholdMs) {
+      // Index is recent enough — check if any files actually changed
+      for (const entry of index.entries) {
+        const absPath = path.join(cwd, entry.filepath);
+        let content: string;
+        try {
+          content = fs.readFileSync(absPath, "utf-8");
+        } catch {
+          return true; // file was deleted or is unreadable
+        }
+        if (hashContent(content) !== entry.fileVersion) {
+          return true; // file content changed
+        }
+      }
+      return false; // all files match, index is fresh
+    }
+  }
+
+  return true; // no lastIndexed or exceeded threshold
 }
 
 function dumpFileName(n: number): string {

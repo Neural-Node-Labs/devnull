@@ -119,6 +119,8 @@ export interface IndexEntry {
   dumpFile: string;
   startLine: number;
   endLine: number;
+  /** ISO 8601 timestamp of when this entry was last indexed. */
+  lastIndexed: string;
 }
 
 /**
@@ -170,6 +172,7 @@ export interface ReActMemory {
 
 export interface IndexFile {
   generatedAt: string;
+  lastIndexed: string;
   entries: IndexEntry[];
 }
 

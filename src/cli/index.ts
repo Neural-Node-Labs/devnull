@@ -40,6 +40,7 @@ program
   .option("--diagnose-live", "run the 7-point ReAct diagnostic suite against the real configured LLM: iteration stopping, restart-approval, duplicate-action avoidance, tool/skill usage, ground-up deployable app, bug fixing, and full SDLC")
   .option("--diagnose-out <path>", "where to write the live diagnostics report markdown (default: reports/live-diagnostics-<timestamp>.md)")
   .option("--initialize-db", "initialize the database (create all tables) and exit")
+  .option("--regression-tools", "run the regression test suite against all registered tools and report results")
   .option("--serve", "start the devnull HTTP API server")
   .option("--port <number>", "port for the API server (default: 3001)", parseInt)
   .option("--host <address>", "host for the API server (default: 0.0.0.0)")
