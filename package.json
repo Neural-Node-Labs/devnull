@@ -8,9 +8,27 @@
     "devnull": "dist/cli/index.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "devnull:link": "npm link  --ignore-scripts",
+    "devnull:unlink": "npm unlink -g devnull",
+    "devnull:install": "npm install  --ignore-scripts && npm install --prefix ui",
+    "devnull:build": "npm run build && npm run build --prefix ui",
+    "devnull:ui": "concurrently \"node dist/cli/index.js --serve --port 3001\" \"npm run dev --prefix ui\"",
+    "devnull:api": "node dist/cli/index.js --serve --port 3001",
+    "build": "tsc -p tsconfig.json && node -e \"fs.cpSync('agent', 'dist/config/agent', { recursive: true })\"",
     "start": "node dist/cli/index.js",
-    "dev": "ts-node --esm src/cli/index.ts"
+    "dev": "ts-node --esm src/cli/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "package:build": "bash scripts/build.sh --compile",
+    "package:validate": "bash scripts/build.sh --validate",
+    "package:tarball": "bash scripts/build.sh --tarball",
+    "package:docker": "bash scripts/build.sh --docker",
+    "package:all": "bash scripts/build.sh --all",
+    "setup": "bash scripts/setup.sh",
+    "setup:non-interactive": "bash scripts/setup.sh --non-interactive",
+    "install": "bash scripts/install.sh",
+    "install:docker": "bash scripts/install-docker.sh",
+    "init-db": "bash scripts/init-db.sh"
   },
   "dependencies": {
     "archiver": "^7.0.1",
