@@ -71,8 +71,4 @@ migrations/
 *.tgz
 
 # ─── Docker files (not needed inside the build context) ──────────────────────
-docker-compose.yml
 docker-compose*.yml
-Dockerfile
-ui/Dockerfile
-ui/nginx.conf

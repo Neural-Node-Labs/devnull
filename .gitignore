@@ -12,5 +12,7 @@ ui/dist/
 
 /.log/
 /ARCHIVE/
-/.agent/
+
 /dev/node_modules/
+/dev/
+
