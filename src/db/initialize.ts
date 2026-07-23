@@ -108,6 +108,49 @@ export async function initializeDatabase(): Promise<DatabaseClient> {
   `);
   await db.query(`CREATE INDEX IF NOT EXISTS idx_projects_active ON projects(active);`);
 
+  // ─── Telemetry Logs ────────────────────────────────────────────────────
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS telemetry_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id TEXT,
+      iteration INTEGER,
+      phase TEXT,
+      thought TEXT,
+      action_tool TEXT,
+      action_input TEXT,
+      observation TEXT,
+      score INTEGER,
+      timestamp TEXT DEFAULT (datetime('now'))
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_telemetry_logs_task_id ON telemetry_logs(task_id);`);
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_telemetry_logs_timestamp ON telemetry_logs(timestamp);`);
+
+  // ─── Telemetry LLM Calls ───────────────────────────────────────────────
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS telemetry_llm_calls (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id TEXT,
+      request TEXT,
+      response TEXT,
+      timestamp TEXT DEFAULT (datetime('now'))
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_telemetry_llm_calls_task_id ON telemetry_llm_calls(task_id);`);
+
+  // ─── Telemetry Errors ──────────────────────────────────────────────────
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS telemetry_errors (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id TEXT,
+      context TEXT,
+      error_message TEXT,
+      error_stack TEXT,
+      timestamp TEXT DEFAULT (datetime('now'))
+    );
+  `);
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_telemetry_errors_task_id ON telemetry_errors(task_id);`);
+
   console.log("[Database] All tables initialized.");
   return db;
 }

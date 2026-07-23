@@ -14,6 +14,8 @@ import { runLiveDiagnostics } from "../core/liveDiagnostics.js";
 import { startApiServer } from "../api/server.js";
 import { dockerComposeUp } from "../tools/dockerComposeDeployTool.js";
 import { deployWorkspaceViaSsh } from "../tools/dockerDeploySshTool.js";
+import { initializeDatabase } from "../db/initialize.js";
+import { runMigrations } from "../db/migrations.js";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -37,6 +39,7 @@ program
   .option("--audit-out <path>", "where to write the audit report markdown (default: reports/react-audit-<timestamp>.md)")
   .option("--diagnose-live", "run the 7-point ReAct diagnostic suite against the real configured LLM: iteration stopping, restart-approval, duplicate-action avoidance, tool/skill usage, ground-up deployable app, bug fixing, and full SDLC")
   .option("--diagnose-out <path>", "where to write the live diagnostics report markdown (default: reports/live-diagnostics-<timestamp>.md)")
+  .option("--initialize-db", "initialize the database (create all tables) and exit")
   .option("--serve", "start the devnull HTTP API server")
   .option("--port <number>", "port for the API server (default: 3001)", parseInt)
   .option("--host <address>", "host for the API server (default: 0.0.0.0)")
@@ -105,6 +108,14 @@ program
       console.log(report.markdown);
       console.log(`\nFull report written to ${outPath}`);
       console.log(`Result: ${report.summary.passed}/${report.summary.total} diagnostics passed.`);
+      return;
+    }
+
+    if (opts.initializeDb) {
+      console.log("[CLI] Initializing database...");
+      const db = await initializeDatabase();
+      await db.close();
+      console.log("[CLI] Database initialization complete.");
       return;
     }
 
