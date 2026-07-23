@@ -19,7 +19,7 @@ export class PostgresProjectStore {
   async init(): Promise<void> {
     if (this.db.initialized) return;
     try {
-      await this.db.query(`
+            await this.db.query(`
         CREATE TABLE IF NOT EXISTS projects (
           id TEXT PRIMARY KEY,
           name TEXT NOT NULL,
@@ -27,8 +27,9 @@ export class PostgresProjectStore {
           active INTEGER DEFAULT 0,
           include_in_llm INTEGER DEFAULT 0,
           created_at TEXT NOT NULL
-        );
-
+          );
+      `);
+      await this.db.query(`
         CREATE INDEX IF NOT EXISTS idx_projects_active ON projects(active);
       `);
     } catch (err) {

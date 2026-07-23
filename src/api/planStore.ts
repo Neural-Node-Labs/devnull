@@ -47,7 +47,7 @@ export class PlanStore {
   async init(): Promise<void> {
     if (this.db.initialized) return;
     try {
-      await this.db.query(`
+            await this.db.query(`
         CREATE TABLE IF NOT EXISTS plans (
           id TEXT PRIMARY KEY,
           task_description TEXT NOT NULL,
@@ -55,8 +55,9 @@ export class PlanStore {
           status TEXT NOT NULL DEFAULT 'active',
           created_at TEXT DEFAULT (datetime('now')),
           updated_at TEXT DEFAULT (datetime('now'))
-        );
-
+          );
+      `);
+      await this.db.query(`
         CREATE TABLE IF NOT EXISTS plan_tasks (
           id TEXT PRIMARY KEY,
           plan_id TEXT NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
@@ -65,9 +66,12 @@ export class PlanStore {
           task_order INTEGER NOT NULL DEFAULT 0,
           created_at TEXT DEFAULT (datetime('now')),
           updated_at TEXT DEFAULT (datetime('now'))
-        );
-
+          );
+      `);
+      await this.db.query(`
         CREATE INDEX IF NOT EXISTS idx_plan_tasks_plan_id ON plan_tasks(plan_id);
+      `);
+      await this.db.query(`
         CREATE INDEX IF NOT EXISTS idx_plans_status ON plans(status);
       `);
     } catch (err) {

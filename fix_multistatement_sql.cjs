@@ -1,178 +1,90 @@
-const fs = require('fs');
-
 /**
- * Fix multi-statement SQL in store init() methods.
- * better-sqlite3's .prepare() rejects multi-statement strings,
- * so we must split CREATE TABLE + CREATE INDEX into separate db.query() calls.
+ * Fix multi-statement SQL in store files.
+ * better-sqlite3's .prepare() rejects SQL strings with more than one statement.
+ * This script splits them into individual db.query() calls.
  */
+const fs = require("fs");
+const path = require("path");
 
 const files = [
-  {
-    path: 'src/api/wbsStore.ts',
-    old: `await this.db.query(\`
-        CREATE TABLE IF NOT EXISTS wbs_entries (
-          id TEXT PRIMARY KEY,
-          task_id TEXT NOT NULL,
-          task_description TEXT NOT NULL,
-          phase_number INTEGER NOT NULL,
-          phase_title TEXT NOT NULL,
-          status TEXT NOT NULL DEFAULT 'pending',
-          created_at TEXT DEFAULT (datetime('now')),
-          updated_at TEXT DEFAULT (datetime('now'))
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_wbs_entries_task_id ON wbs_entries(task_id);
-      \`);`,
-    new: `await this.db.query(\`
-        CREATE TABLE IF NOT EXISTS wbs_entries (
-          id TEXT PRIMARY KEY,
-          task_id TEXT NOT NULL,
-          task_description TEXT NOT NULL,
-          phase_number INTEGER NOT NULL,
-          phase_title TEXT NOT NULL,
-          status TEXT NOT NULL DEFAULT 'pending',
-          created_at TEXT DEFAULT (datetime('now')),
-          updated_at TEXT DEFAULT (datetime('now'))
-        );
-      \`);
-      await this.db.query(\`
-        CREATE INDEX IF NOT EXISTS idx_wbs_entries_task_id ON wbs_entries(task_id);
-      \`);`
-  },
-  {
-    path: 'src/api/phaseReportStore.ts',
-    old: `await this.db.query(\`
-        CREATE TABLE IF NOT EXISTS phase_reports (
-          id TEXT PRIMARY KEY,
-          task_id TEXT NOT NULL,
-          phase_number INTEGER NOT NULL,
-          phase_title TEXT NOT NULL,
-          content TEXT NOT NULL,
-          tokens INTEGER DEFAULT 0,
-          iterations INTEGER DEFAULT 0,
-          created_at TEXT DEFAULT (datetime('now'))
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_phase_reports_task_id ON phase_reports(task_id);
-      \`);`,
-    new: `await this.db.query(\`
-        CREATE TABLE IF NOT EXISTS phase_reports (
-          id TEXT PRIMARY KEY,
-          task_id TEXT NOT NULL,
-          phase_number INTEGER NOT NULL,
-          phase_title TEXT NOT NULL,
-          content TEXT NOT NULL,
-          tokens INTEGER DEFAULT 0,
-          iterations INTEGER DEFAULT 0,
-          created_at TEXT DEFAULT (datetime('now'))
-        );
-      \`);
-      await this.db.query(\`
-        CREATE INDEX IF NOT EXISTS idx_phase_reports_task_id ON phase_reports(task_id);
-      \`);`
-  },
-  {
-    path: 'src/api/taskHistoryStore.ts',
-    old: `await this.db.query(\`
-        CREATE TABLE IF NOT EXISTS task_history (
-          id TEXT PRIMARY KEY,
-          task TEXT NOT NULL,
-          summary TEXT NOT NULL,
-          timestamp TEXT NOT NULL,
-          iterations INTEGER DEFAULT 0,
-          total_tokens INTEGER
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_task_history_timestamp ON task_history(timestamp DESC);
-      \`);`,
-    new: `await this.db.query(\`
-        CREATE TABLE IF NOT EXISTS task_history (
-          id TEXT PRIMARY KEY,
-          task TEXT NOT NULL,
-          summary TEXT NOT NULL,
-          timestamp TEXT NOT NULL,
-          iterations INTEGER DEFAULT 0,
-          total_tokens INTEGER
-        );
-      \`);
-      await this.db.query(\`
-        CREATE INDEX IF NOT EXISTS idx_task_history_timestamp ON task_history(timestamp DESC);
-      \`);`
-  },
-  {
-    path: 'src/api/planStore.ts',
-    old: `await this.db.query(\`
-        CREATE TABLE IF NOT EXISTS plans (
-          id TEXT PRIMARY KEY,
-          task_description TEXT NOT NULL,
-          plan_content TEXT NOT NULL,
-          status TEXT NOT NULL DEFAULT 'active',
-          created_at TEXT DEFAULT (datetime('now')),
-          updated_at TEXT DEFAULT (datetime('now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS plan_tasks (
-          id TEXT PRIMARY KEY,
-          plan_id TEXT NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
-          description TEXT NOT NULL,
-          status TEXT NOT NULL DEFAULT 'pending',
-          task_order INTEGER NOT NULL DEFAULT 0,
-          created_at TEXT DEFAULT (datetime('now')),
-          updated_at TEXT DEFAULT (datetime('now'))
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_plan_tasks_plan_id ON plan_tasks(plan_id);
-        CREATE INDEX IF NOT EXISTS idx_plans_status ON plans(status);
-      \`);`,
-    new: `await this.db.query(\`
-        CREATE TABLE IF NOT EXISTS plans (
-          id TEXT PRIMARY KEY,
-          task_description TEXT NOT NULL,
-          plan_content TEXT NOT NULL,
-          status TEXT NOT NULL DEFAULT 'active',
-          created_at TEXT DEFAULT (datetime('now')),
-          updated_at TEXT DEFAULT (datetime('now'))
-        );
-      \`);
-      await this.db.query(\`
-        CREATE TABLE IF NOT EXISTS plan_tasks (
-          id TEXT PRIMARY KEY,
-          plan_id TEXT NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
-          description TEXT NOT NULL,
-          status TEXT NOT NULL DEFAULT 'pending',
-          task_order INTEGER NOT NULL DEFAULT 0,
-          created_at TEXT DEFAULT (datetime('now')),
-          updated_at TEXT DEFAULT (datetime('now'))
-        );
-      \`);
-      await this.db.query(\`
-        CREATE INDEX IF NOT EXISTS idx_plan_tasks_plan_id ON plan_tasks(plan_id);
-      \`);
-      await this.db.query(\`
-        CREATE INDEX IF NOT EXISTS idx_plans_status ON plans(status);
-      \`);`
-  }
+  "src/api/planStore.ts",
+  "src/api/wbsStore.ts",
+  "src/api/phaseReportStore.ts",
+  "src/api/taskHistoryStore.ts",
+  "src/api/postgresProjectStore.ts",
+  "src/core/postgresTaskHistory.ts",
 ];
 
-let successCount = 0;
-let failCount = 0;
-
-for (const file of files) {
-  try {
-    let content = fs.readFileSync(file.path, 'utf8');
-    if (content.includes(file.old)) {
-      content = content.replace(file.old, file.new);
-      fs.writeFileSync(file.path, content, 'utf8');
-      console.log(`✓ ${file.path} — fixed`);
-      successCount++;
-    } else {
-      console.log(`✗ ${file.path} — pattern not found (may already be fixed)`);
-      failCount++;
-    }
-  } catch (err) {
-    console.log(`✗ ${file.path} — error: ${err.message}`);
-    failCount++;
-  }
+function normalizeLineEndings(str) {
+  return str.replace(/\r\n/g, "\n");
 }
 
-console.log(`\nDone: ${successCount} fixed, ${failCount} failed`);
+function fixFile(filePath) {
+  console.log(`\n=== ${filePath} ===`);
+  let content = fs.readFileSync(filePath, "utf8");
+  const hasCRLF = content.includes("\r\n");
+  const normalized = normalizeLineEndings(content);
+
+  // Find the init() method and extract the db.query() call with multi-statement SQL
+  const initMatch = normalized.match(
+    /async init\(\)[\s\S]*?\{([\s\S]*?)\}\s*catch\s*\(/
+  );
+
+  if (!initMatch) {
+    console.log("  Could not find init() method");
+    return false;
+  }
+
+  const initBody = initMatch[1];
+
+  // Find multi-statement db.query() calls (containing CREATE TABLE + CREATE INDEX or multiple CREATE TABLE)
+  const queryMatch = initBody.match(
+    /await this\.db\.query\(`([\s\S]*?)`\s*\);/
+  );
+
+  if (!queryMatch) {
+    console.log("  No db.query() call found in init()");
+    return false;
+  }
+
+  const fullQuery = queryMatch[0];
+  const sqlContent = queryMatch[1];
+
+  // Split by semicolons followed by newline and optional whitespace
+  const statements = sqlContent
+    .split(/;\s*\n\s*/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+
+  if (statements.length <= 1) {
+    console.log("  Only one statement found, no fix needed");
+    return false;
+  }
+
+  console.log(`  Found ${statements.length} statements to split`);
+
+  // Build replacement: individual db.query() calls
+  const newQueries = statements
+    .map((stmt) => {
+      // Re-indent the statement
+      const indented = stmt
+        .split("\n")
+        .map((line, i) => (i === 0 ? line : `          ${line.trim()}`))
+        .join("\n");
+      return `      await this.db.query(\`\n        ${indented};\n      \`);`;
+    })
+    .join("\n");
+
+  const newContent = normalized.replace(fullQuery, newQueries);
+
+  // Write back with original line endings
+  fs.writeFileSync(filePath, hasCRLF ? newContent.replace(/\n/g, "\r\n") : newContent, "utf8");
+  console.log(`  ✅ Fixed: split ${statements.length} statements`);
+  return true;
+}
+
+let fixed = 0;
+for (const f of files) {
+  if (fixFile(f)) fixed++;
+}
+console.log(`\nFixed ${fixed} of ${files.length} files.`);

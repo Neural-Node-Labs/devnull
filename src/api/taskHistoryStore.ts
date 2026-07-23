@@ -30,7 +30,7 @@ export class TaskHistoryStore {
   async init(): Promise<void> {
     if (this.db.initialized) return;
     try {
-      await this.db.query(`
+            await this.db.query(`
         CREATE TABLE IF NOT EXISTS task_history (
           id TEXT PRIMARY KEY,
           task TEXT NOT NULL,
@@ -38,8 +38,9 @@ export class TaskHistoryStore {
           timestamp TEXT NOT NULL,
           iterations INTEGER DEFAULT 0,
           total_tokens INTEGER
-        );
-
+          );
+      `);
+      await this.db.query(`
         CREATE INDEX IF NOT EXISTS idx_task_history_timestamp ON task_history(timestamp DESC);
       `);
     } catch (err) {

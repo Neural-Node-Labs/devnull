@@ -32,7 +32,7 @@ export class PhaseReportStore {
   async init(): Promise<void> {
     try {
       if (this.db.initialized) return;
-      await this.db.query(`
+            await this.db.query(`
         CREATE TABLE IF NOT EXISTS phase_reports (
           id TEXT PRIMARY KEY,
           task_id TEXT NOT NULL,
@@ -42,8 +42,9 @@ export class PhaseReportStore {
           tokens INTEGER DEFAULT 0,
           iterations INTEGER DEFAULT 0,
           created_at TEXT DEFAULT (datetime('now'))
-        );
-
+          );
+      `);
+      await this.db.query(`
         CREATE INDEX IF NOT EXISTS idx_phase_reports_task_id ON phase_reports(task_id);
       `);
     } catch (err) {

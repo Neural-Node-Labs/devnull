@@ -32,7 +32,7 @@ export class WbsStore {
   async init(): Promise<void> {
     if (this.db.initialized) return;
     try {
-      await this.db.query(`
+            await this.db.query(`
         CREATE TABLE IF NOT EXISTS wbs_entries (
           id TEXT PRIMARY KEY,
           task_id TEXT NOT NULL,
@@ -42,8 +42,9 @@ export class WbsStore {
           status TEXT NOT NULL DEFAULT 'pending',
           created_at TEXT DEFAULT (datetime('now')),
           updated_at TEXT DEFAULT (datetime('now'))
-        );
-
+          );
+      `);
+      await this.db.query(`
         CREATE INDEX IF NOT EXISTS idx_wbs_entries_task_id ON wbs_entries(task_id);
       `);
     } catch (err) {
