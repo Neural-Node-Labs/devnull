@@ -35,9 +35,8 @@ export async function initializeDatabase(): Promise<DatabaseClient> {
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
     );
-
-    CREATE INDEX IF NOT EXISTS idx_plans_status ON plans(status);
   `);
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_plans_status ON plans(status);`);
 
   // ─── Plan Tasks ───────────────────────────────────────────────────────
   await db.query(`
@@ -50,9 +49,8 @@ export async function initializeDatabase(): Promise<DatabaseClient> {
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
     );
-
-    CREATE INDEX IF NOT EXISTS idx_plan_tasks_plan_id ON plan_tasks(plan_id);
   `);
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_plan_tasks_plan_id ON plan_tasks(plan_id);`);
 
   // ─── Phase Reports ────────────────────────────────────────────────────
   await db.query(`
@@ -66,9 +64,8 @@ export async function initializeDatabase(): Promise<DatabaseClient> {
       iterations INTEGER DEFAULT 0,
       created_at TEXT DEFAULT (datetime('now'))
     );
-
-    CREATE INDEX IF NOT EXISTS idx_phase_reports_task_id ON phase_reports(task_id);
   `);
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_phase_reports_task_id ON phase_reports(task_id);`);
 
   // ─── WBS Entries ──────────────────────────────────────────────────────
   await db.query(`
@@ -82,9 +79,8 @@ export async function initializeDatabase(): Promise<DatabaseClient> {
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
     );
-
-    CREATE INDEX IF NOT EXISTS idx_wbs_entries_task_id ON wbs_entries(task_id);
   `);
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_wbs_entries_task_id ON wbs_entries(task_id);`);
 
   // ─── Task History ─────────────────────────────────────────────────────
   await db.query(`
@@ -96,9 +92,8 @@ export async function initializeDatabase(): Promise<DatabaseClient> {
       iterations INTEGER DEFAULT 0,
       total_tokens INTEGER
     );
-
-    CREATE INDEX IF NOT EXISTS idx_task_history_timestamp ON task_history(timestamp DESC);
   `);
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_task_history_timestamp ON task_history(timestamp DESC);`);
 
   // ─── Projects ─────────────────────────────────────────────────────────
   await db.query(`
@@ -110,9 +105,8 @@ export async function initializeDatabase(): Promise<DatabaseClient> {
       include_in_llm INTEGER DEFAULT 0,
       created_at TEXT NOT NULL
     );
-
-    CREATE INDEX IF NOT EXISTS idx_projects_active ON projects(active);
   `);
+  await db.query(`CREATE INDEX IF NOT EXISTS idx_projects_active ON projects(active);`);
 
   console.log("[Database] All tables initialized.");
   return db;

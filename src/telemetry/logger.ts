@@ -17,7 +17,11 @@ export class FileTelemetry implements TelemetryInterface {
   private maxLogSize: number;
 
   constructor(workspaceRoot: string = process.cwd(), maxLogSize?: number) {
-    this.logDir = path.join(workspaceRoot, ".log");
+    // Respect DEVNULL_LOG_DIR env var for configurable log directory (consistent with
+    // filePhaseReportStore, fileTaskHistoryStore, fileWbsStore). Falls back to .log/ under
+    // the workspace root. This is important in Docker where the workspace root (/app) may
+    // not be writable by the non-root user.
+    this.logDir = process.env.DEVNULL_LOG_DIR ?? path.join(workspaceRoot, ".log");
     this.maxLogSize = maxLogSize ?? 2 * 1024 * 1024; // 2 MB default
     fs.mkdirSync(this.logDir, { recursive: true });
   }

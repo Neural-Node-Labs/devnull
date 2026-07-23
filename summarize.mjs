@@ -31,7 +31,7 @@ try {
 
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 const DEEPSEEK_API_URL  = 'https://api.deepseek.com/v1/chat/completions';
-const DEFAULT_MODEL     = 'deepseek-chat';
+const DEFAULT_MODEL     = 'deepseek-v4-flash';
 const MAX_INPUT_CHARS   = 12_000; // trim content to stay within token limits
 
 // ── CLI args ────────────────────────────────────────────────────────────────

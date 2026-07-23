@@ -31,7 +31,6 @@ Thumbs.db
 
 # ─── Docker files (not needed inside the build context) ──────────────────────
 Dockerfile
-nginx.conf
 
 # ─── Test suites ─────────────────────────────────────────────────────────────
 tests/

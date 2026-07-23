@@ -10,19 +10,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/cli/index.js",
-    "dev": "ts-node --esm src/cli/index.ts",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "package:build": "bash scripts/build.sh --compile",
-    "package:validate": "bash scripts/build.sh --validate",
-    "package:tarball": "bash scripts/build.sh --tarball",
-    "package:docker": "bash scripts/build.sh --docker",
-    "package:all": "bash scripts/build.sh --all",
-    "setup": "bash scripts/setup.sh",
-    "setup:non-interactive": "bash scripts/setup.sh --non-interactive",
-    "install": "bash scripts/install.sh",
-    "install:docker": "bash scripts/install-docker.sh",
-    "init-db": "bash scripts/init-db.sh"
+    "dev": "ts-node --esm src/cli/index.ts"
   },
   "dependencies": {
     "archiver": "^7.0.1",

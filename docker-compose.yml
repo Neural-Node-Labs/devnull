@@ -1,193 +1,58 @@
-# =============================================================================
 # devnull — Docker Compose
+# Spins up the API backend and the UI frontend (served via nginx).
 #
-# Default mode: SQLite (zero-config, file-based database).
+# Usage:
 #   docker compose up -d --build
-#
-# PostgreSQL mode (opt-in):
-#   docker compose --profile postgres up -d --build
-#
-# With UI (optional):
-#   docker compose --profile ui up -d --build
-#
-# Profiles:
-#   postgres  — starts a PostgreSQL container alongside the API
-#   ui        — starts the React SPA served by nginx
-#
-# Networks:
-#   devnull-net — internal bridge network for inter-service communication
-# =============================================================================
+#   docker compose down
+#   docker compose logs -f
 
 services:
-  # ─── API Service ─────────────────────────────────────────────────────────
   api:
     build:
       context: .
       dockerfile: Dockerfile
     image: devnull-api:latest
     container_name: devnull-api
-    env_file:
-      - .env
-    environment:
-      # ─── Core ───────────────────────────────────────────────────────────
-      - DEVNULL_HOME=/opt/devnull
-      - DEVNULL_API_PORT=3001
-      - NODE_ENV=${NODE_ENV:-production}
-
-      # ─── Database (SQLite by default) ───────────────────────────────────
-      - DATABASE_TYPE=${DATABASE_TYPE:-sqlite}
-      - DATABASE_SQLITE_PATH=/data/devnull.db
-
-      # ─── PostgreSQL (only used when DATABASE_TYPE=postgres) ─────────────
-      - DATABASE_URL=${DATABASE_URL:-}
-      - DATABASE_HOST=${DATABASE_HOST:-postgres}
-      - DATABASE_PORT=${DATABASE_PORT:-5432}
-      - DATABASE_NAME=${DATABASE_NAME:-devnull}
-      - DATABASE_USER=${DATABASE_USER:-devnull}
-      - DATABASE_PASSWORD=${DATABASE_PASSWORD:-devnull_pass}
-
-      # ─── LLM / Auth ─────────────────────────────────────────────────────
-      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - DEVNULL_API_KEY=${DEVNULL_API_KEY:-}
-      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
     ports:
-      - "${DEVNULL_API_PORT:-3001}:3001"
+      - "3001:3001"
+    environment:
+      - NODE_ENV=production
+      - DEVNULL_API_PORT=3001
+      - DEVNULL_API_HOST=0.0.0.0
+      - DATABASE_TYPE=sqlite
+      - DATABASE_SQLITE_PATH=/data/devnull.db
     volumes:
-      # Mount your project as the workspace devnull operates on.
-      - .:/workspace
-      # Persistent SQLite database volume (survives container restarts).
       - devnull-data:/data
-    working_dir: /workspace
-    restart: unless-stopped
-
-    # ─── Networking ───────────────────────────────────────────────────────
-    networks:
-      - devnull-net
-
-    # ─── Resource limits ──────────────────────────────────────────────────
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: "2G"
-        reservations:
-          cpus: "0.1"
-          memory: "128M"
-
-    # ─── Healthcheck ──────────────────────────────────────────────────────
     healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3001/api/v1/health', r => {process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3001/api/v1/health"]
       interval: 30s
       timeout: 5s
+      start_period: 15s
       retries: 3
-      start_period: 10s
-
-    # ─── Profiles ─────────────────────────────────────────────────────────
-    # Default (no profile): API only, SQLite
-    # --profile postgres: API + PostgreSQL
-    # --profile ui: API + UI
-    profiles:
-      - ""
-      - postgres
-      - ui
-
-    # ─── Command ──────────────────────────────────────────────────────────
-    # Start the API server in serve mode
-    command:
-      - "--serve"
-      - "--port"
-      - "3001"
-      - "--host"
-      - "0.0.0.0"
-
-  # ─── PostgreSQL (optional — opt-in via --profile postgres) ──────────────
-  postgres:
-    image: postgres:16-alpine
-    container_name: devnull-postgres
-    profiles:
-      - postgres
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-devnull}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devnull_pass}
-      POSTGRES_DB: ${POSTGRES_DB:-devnull}
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-devnull} -d ${POSTGRES_DB:-devnull}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
     restart: unless-stopped
 
-    # ─── Networking ───────────────────────────────────────────────────────
-    networks:
-      - devnull-net
-
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: "512M"
-        reservations:
-          cpus: "0.1"
-          memory: "128M"
-
-  # ─── UI Service (optional — opt-in via --profile ui) ────────────────────
   ui:
     build:
       context: ./ui
       dockerfile: Dockerfile
     image: devnull-ui:latest
     container_name: devnull-ui
-    profiles:
-      - ui
     ports:
-      - "${UI_PORT:-8080}:80"
+      - "80:80"
     environment:
       - API_HOST=api
       - API_PORT=3001
     depends_on:
       api:
-        condition: service_healthy
-    restart: unless-stopped
-
-    # ─── Networking ───────────────────────────────────────────────────────
-    networks:
-      - devnull-net
-
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: "256M"
-        reservations:
-          cpus: "0.1"
-          memory: "64M"
+        condition: service_started
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:80/"]
       interval: 30s
       timeout: 5s
+      start_period: 10s
       retries: 3
-      start_period: 5s
+    restart: unless-stopped
 
-# ─── Networks ────────────────────────────────────────────────────────────────
-networks:
-  devnull-net:
-    name: devnull-network
-    driver: bridge
-    # Internal: false allows containers to reach the internet (for LLM API calls)
-    # Set to true if you want to isolate the stack from the host network.
-    internal: false
-
-# ─── Volumes ─────────────────────────────────────────────────────────────────
 volumes:
   devnull-data:
-    name: devnull-sqlite-data
-    driver: local
-  pgdata:
-    name: devnull-pgdata
     driver: local

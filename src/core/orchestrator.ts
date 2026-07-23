@@ -1476,10 +1476,11 @@ export class ReActOrchestrator {
       console.log(`\nIteration limit reached (${maxIterations}) — non-interactive mode, auto-continuing.`);
       return true;
     }
-    const rl = readline.createInterface({ input, output });
+
     console.log(
       `\n${ANSI_GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${ANSI_RESET}`
     );
+    const rl = readline.createInterface({ input, output });
     console.log(
       `${ANSI_GREEN}▶ ITERATION LIMIT REACHED — Continue?${ANSI_RESET}`
     );
@@ -1513,14 +1514,16 @@ export class ReActOrchestrator {
   ): Promise<boolean> {
 
     const interactive = this.opts.interactive !== false; // default true
+
     if (!interactive) {
       console.log(`\nSubagent iteration limit reached (${iterationCount} iterations) — non-interactive mode, auto-continuing.`);
       return true;
     }
-    const rl = readline.createInterface({ input, output });
     console.log(
       `\n${ANSI_YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${ANSI_RESET}`
     );
+    const rl = readline.createInterface({ input, output });
+
     console.log(
       `${ANSI_YELLOW}▶ SUBAGENT ITERATION LIMIT REACHED — Continue?${ANSI_RESET}`
     );
