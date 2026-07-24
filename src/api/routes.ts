@@ -7,7 +7,7 @@ import { DeepSeekClient } from "../llm/deepseekClient.js";
 import { FileTelemetry } from "../telemetry/logger.js";
 import { loadLlmConfig } from "../config/loadConfig.js";
 import { SkillRegistry } from "../core/skillRegistry.js";
-import { authMiddleware, verifyLogin, generateToken, revokeToken, setUserStore, getUserStore, hashPassword, StoredUser } from "./auth.js";
+import { authMiddleware, verifyLogin, generateToken, revokeToken, setUserStore, getUserStore, hashPassword, needsRehash, StoredUser } from "./auth.js";
 import { registerProjectRoutes } from "./projectRoutes.js";
 import { registerPlanRoutes } from "./planRoutes.js";
 import { listProjects, getProject } from "./projectStore.js";
@@ -85,6 +85,15 @@ export function createRouter(): Router {
       const body: ApiResponse = { success: false, error: "Invalid username or password" };
       res.status(401).json(body);
       return;
+    }
+
+    // Transparently upgrade legacy SHA-256 password hashes to scrypt now that we've verified
+    // the plaintext password against them — this only ever runs once per account, the next
+    // login for that user will already be on the stronger format. `verifiedUser` is the live
+    // object reference from the in-memory store (see storedUsers below), so mutating it here
+    // is enough — no separate write-back step needed.
+    if (needsRehash(verifiedUser.passwordHash)) {
+      verifiedUser.passwordHash = hashPassword(password);
     }
 
     const token = generateToken(verifiedUser.username, verifiedUser.role);

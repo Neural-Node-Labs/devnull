@@ -5,6 +5,7 @@ import path from "node:path";
 import { LlmClient, LlmMessage, ReActStep, TelemetryInterface, LoadedSkill, Phase, LlmUsage, SubagentResult, ReActMemory, ScoreEntry, HealthScore, DEFAULT_HEALTH_SCORE } from "./types.js";
 import { SkillRegistry } from "./skillRegistry.js";
 import { TOOL_SCHEMAS } from "../tools/toolSchemas.js";
+import { filterToolsForSkills } from "../tools/toolSchemaFilter.js";
 import { dispatchToolCall } from "../tools/toolDispatcher.js";
 import { buildProtocolPrompt, writeTodo, appendTodoReview } from "./protocol.js";
 import { validateGoal, buildObservationTranscript } from "./goalValidator.js";
@@ -525,7 +526,7 @@ export class ReActOrchestrator {
 
       const spinner = new Spinner();
       if (showConsole) spinner.start(indent > 0 ? "Subagent thinking..." : "Thinking...");
-      const response = await this.llm.complete(messages, { tools: TOOL_SCHEMAS });
+      const response = await this.llm.complete(messages, { tools: filterToolsForSkills(skills) });
       if (showConsole) spinner.stop();
       this.addUsage(response.usage);
 
