@@ -2,7 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import type { StoredUser } from "./auth.js";
-import { restrictFileToCurrentUser } from "../util/filePermissions.js";
 
 /**
  * File-based persistence for the API's user store.
@@ -51,14 +50,10 @@ export function loadUserStore(): UserStoreFile {
   }
 }
 
-/** Persists the user store to disk. mode 0600 on POSIX, plus an icacls-based restriction on
- *  Windows (see restrictFileToCurrentUser) since mode bits alone don't do anything there --
- *  same "owner-only, best effort" bar llmKeyStore.ts already uses for this class of local
- *  plaintext-on-disk data (this file holds password hashes, not plaintext passwords, but
- *  still worth keeping off other local accounts' reach). */
+/** Persists the user store to disk. mode 0600: same "owner-only, best effort" bar
+ *  llmKeyStore.ts already uses for this class of local plaintext-on-disk data. */
 export function saveUserStore(data: UserStoreFile): void {
   const p = storePath();
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, JSON.stringify(data, null, 2), { encoding: "utf-8", mode: 0o600 });
-  restrictFileToCurrentUser(p);
 }

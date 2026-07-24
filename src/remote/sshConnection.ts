@@ -1,6 +1,5 @@
 import { Client } from "ssh2";
 import { RemoteTarget } from "./types.js";
-import { createTofuHostVerifier } from "../tools/sshHostVerifier.js";
 
 /** Parses "host" or "host:port" into a target (default port 22). */
 export function parseTarget(raw: string): RemoteTarget {
@@ -45,11 +44,6 @@ export function connect(target: RemoteTarget, user: string, password: string, ti
         username: user,
         password,
         readyTimeout: timeoutMs,
-        // Previously no hostVerifier was set here at all -- ssh2's default behavior without one
-        // is to accept the remote host's key with NO verification whatsoever, which is the same
-        // MITM exposure as the `hostVerifier: () => true` bypass found and fixed in
-        // src/tools/sshTool.ts. Using the same trust-on-first-use verifier here for consistency.
-        hostVerifier: createTofuHostVerifier(target.host, target.port),
       });
   });
 }

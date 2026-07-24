@@ -2,7 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import type { LlmConfig } from "../config/loadConfig.js";
-import { restrictFileToCurrentUser } from "../util/filePermissions.js";
 
 const STORE_PATH = path.join(os.homedir(), ".devnull", "llm-key.json");
 
@@ -20,14 +19,11 @@ export function hasStoredApiKey(): boolean {
   return Boolean(getStoredApiKey());
 }
 
-/** file mode 0600 on POSIX (readable/writable by the owner only), plus an icacls-based
- *  restriction on Windows where mode bits alone don't do anything -- this is a plaintext local
- *  file, not a proper secrets store, so restricting OS-level file permissions on whichever
- *  platform we're on is the minimum reasonable bar. */
+/** file mode 0600: readable/writable by the owner only — this is a plaintext local file, not a
+ *  proper secrets store, so restricting OS-level file permissions is the minimum reasonable bar. */
 export function setStoredApiKey(apiKey: string): void {
   fs.mkdirSync(path.dirname(STORE_PATH), { recursive: true });
   fs.writeFileSync(STORE_PATH, JSON.stringify({ apiKey }), { encoding: "utf-8", mode: 0o600 });
-  restrictFileToCurrentUser(STORE_PATH);
 }
 
 export function clearStoredApiKey(): void {

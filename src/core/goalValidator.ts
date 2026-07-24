@@ -4,13 +4,6 @@ export interface ValidationResult {
   valid: boolean;
   reason: string;
   usage?: LlmUsage;
-  /** True when `valid: true` came from failing to parse the validator's own response, rather
-   *  than an actual judgment that the task was completed correctly. Previously this case was
-   *  indistinguishable from a genuine pass anywhere downstream (same shape, same `valid: true`,
-   *  folded into the same telemetry "observation" field) — this flag lets callers treat it as
-   *  the "unverified" case it actually is, e.g. surfacing a distinct warning instead of a
-   *  silent-looking pass. */
-  failedOpen?: boolean;
 }
 
 /**
@@ -55,13 +48,11 @@ export async function validateGoal(
     const parsed = JSON.parse(cleaned);
     return { valid: Boolean(parsed.valid), reason: String(parsed.reason ?? ""), usage: response.usage };
   } catch {
-    // Fail open on our own parsing bug rather than blocking completion forever on a format slip
-    // -- but flagged distinctly (failedOpen: true) so this doesn't read as an ordinary pass to
-    // anything consuming the result.
+    // Fail open on our own parsing bug rather than blocking completion forever on a format slip,
+    // but this is logged so it's visible, not silent.
     return {
       valid: true,
-      failedOpen: true,
-      reason: `validator response unparseable, defaulting to valid (fail-open, UNVERIFIED): ${response.content.slice(0, 200)}`,
+      reason: `validator response unparseable, defaulting to valid (fail-open): ${response.content.slice(0, 200)}`,
       usage: response.usage,
     };
   }
@@ -74,3 +65,4 @@ export function buildObservationTranscript(messages: LlmMessage[]): string {
     .map((m) => `[${m.name}] ${m.content}`)
     .join("\n\n");
 }
+

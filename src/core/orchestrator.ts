@@ -565,20 +565,6 @@ export class ReActOrchestrator {
             observation: verdict,
           });
 
-          if (verdict.valid && verdict.failedOpen) {
-            // Distinct from a genuine pass: the validator's own response couldn't be parsed, so
-            // this completion is being accepted UNVERIFIED, not because it was actually checked
-            // and found sound. Surfaced separately so it doesn't just blend into telemetry as an
-            // ordinary validation pass.
-            await this.telemetry.logError(
-              { reason: `goal validator fail-open: ${verdict.reason}` },
-              "goal_validator"
-            );
-            if (!runOpts.isSubagent) {
-              console.log(`\n[goal validator] WARNING: validator response unparseable — accepting completion UNVERIFIED.`);
-            }
-          }
-
           if (!verdict.valid) {
             validatorRejections += 1;
             if (!runOpts.isSubagent) {

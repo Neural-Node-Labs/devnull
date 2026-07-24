@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { restrictFileToCurrentUser } from "../util/filePermissions.js";
 
 /**
  * Trust-on-first-use (TOFU) host key verification for ssh2's password-auth connections.
@@ -33,7 +32,6 @@ function loadStore(): Record<string, string> {
 function saveStore(store: Record<string, string>): void {
   fs.mkdirSync(path.dirname(STORE_PATH), { recursive: true });
   fs.writeFileSync(STORE_PATH, JSON.stringify(store, null, 2), { encoding: "utf-8", mode: 0o600 });
-  restrictFileToCurrentUser(STORE_PATH);
 }
 
 /**

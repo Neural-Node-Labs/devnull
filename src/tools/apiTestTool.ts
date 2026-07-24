@@ -5,8 +5,6 @@
  * JSON/Form/Text bodies, query parameters, and optional response validation.
  * Returns structured results including status, headers, body, and timing.
  */
-import { safeFetch } from "./ssrfGuard.js";
-
 export interface ApiTestResult {
   url: string;
   method: string;
@@ -100,16 +98,13 @@ export async function testApiEndpoint(opts: ApiTestOptions): Promise<ApiTestResu
   const timeoutId = setTimeout(() => controller.abort(), timeout);
 
   try {
-    const response = await safeFetch(
-      targetUrl,
-      {
-        method,
-        headers: fetchHeaders,
-        body: fetchBody,
-        signal: controller.signal,
-      },
-      { allowPrivate: true } // this tool's purpose includes testing the user's own local APIs
-    );
+    const response = await fetch(targetUrl, {
+      method,
+      headers: fetchHeaders,
+      body: fetchBody,
+      signal: controller.signal,
+      redirect: "follow",
+    });
 
     const durationMs = Date.now() - startTime;
 
