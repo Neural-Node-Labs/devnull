@@ -8,7 +8,6 @@ import { FileTelemetry } from "../telemetry/logger.js";
 import { loadLlmConfig } from "../config/loadConfig.js";
 import { SkillRegistry } from "../core/skillRegistry.js";
 import { authMiddleware, verifyLogin, generateToken, revokeToken, setUserStore, getUserStore, hashPassword, needsRehash, StoredUser } from "./auth.js";
-import { loadUserStore, saveUserStore } from "./fileUserStore.js";
 import { registerProjectRoutes } from "./projectRoutes.js";
 import { registerPlanRoutes } from "./planRoutes.js";
 import { listProjects, getProject } from "./projectStore.js";
@@ -92,11 +91,9 @@ export function createRouter(): Router {
     // the plaintext password against them — this only ever runs once per account, the next
     // login for that user will already be on the stronger format. `verifiedUser` is the live
     // object reference from the in-memory store (see storedUsers below), so mutating it here
-    // updates the shared array directly; persistUsers() then writes that upgrade to disk so
-    // it survives a restart too, not just the current process's memory.
+    // is enough — no separate write-back step needed.
     if (needsRehash(verifiedUser.passwordHash)) {
       verifiedUser.passwordHash = hashPassword(password);
-      persistUsers();
     }
 
     const token = generateToken(verifiedUser.username, verifiedUser.role);
@@ -708,17 +705,9 @@ export function createRouter(): Router {
   });
 
   // ─── User Management ───────────────────────────────────────────────────
-  // Persistent user store with password hashing. Loaded from disk (~/.devnull/users.json) on
-  // startup rather than starting empty every time — the array itself stays in-memory for the
-  // life of the process (existing code already relies on that reference being live, e.g. the
-  // login-rehash mutation), but every mutation now writes back to disk via persistUsers().
-  const loadedUserStore = loadUserStore();
-  const storedUsers: StoredUser[] = loadedUserStore.users;
-  let nextUserId = loadedUserStore.nextUserId;
-
-  function persistUsers(): void {
-    saveUserStore({ users: storedUsers, nextUserId });
-  }
+  // Persistent user store with password hashing (in-memory for now, but structured for DB migration)
+  const storedUsers: StoredUser[] = [];
+  let nextUserId = 1;
 
   // Initialize the auth module's reference to our user store
   setUserStore(storedUsers);
@@ -763,7 +752,6 @@ export function createRouter(): Router {
     };
 
     storedUsers.push(newUser);
-    persistUsers();
 
     // Auto-login after registration
     const token = generateToken(newUser.username, newUser.role);
@@ -823,7 +811,6 @@ export function createRouter(): Router {
     };
 
     storedUsers.push(newUser);
-    persistUsers();
 
     const safeUser: User = {
       id: newUser.id,
@@ -853,7 +840,6 @@ export function createRouter(): Router {
     if (updates.role !== undefined) {
       user.role = updates.role === "admin" ? "admin" : "user";
     }
-    persistUsers();
 
     const body: ApiResponse<User> = {
       success: true,
@@ -881,7 +867,6 @@ export function createRouter(): Router {
     }
 
     const deleted = storedUsers.splice(index, 1)[0];
-    persistUsers();
     const body: ApiResponse<User> = {
       success: true,
       data: { id: deleted.id, username: deleted.username, role: deleted.role, createdAt: deleted.createdAt },
