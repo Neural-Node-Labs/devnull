@@ -1,5 +1,6 @@
 import * as cheerio from "cheerio";
 import { writeFile } from "./writeEditTool.js";
+import { safeFetch } from "./ssrfGuard.js";
 
 export interface CrawlSummary {
   url: string;
@@ -28,7 +29,7 @@ interface FormInfo {
  * and stubs out a test per discovered interactive element for the user to fill in/adjust.
  */
 export async function crawlAndGeneratePlaywrightTest(url: string, outputPath: string, cwd: string = process.cwd()): Promise<CrawlSummary> {
-  const res = await fetch(url, {
+  const res = await safeFetch(url, {
     headers: {
       "User-Agent": "Mozilla/5.0 (compatible; devnull-crawler/1.0; +https://github.com/neural-node-labs/devnull)",
       Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -112,7 +113,7 @@ function generateSpec(
   buttons: string[],
   forms: FormInfo[]
 ): string {
-  const escaped = (s: string) => s.replace(/'/g, "\\'");
+  const escaped = (s: string) => s.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 
   const linkTests = dedupeByLabel(links.slice(0, 10).map((l) => l.text))
     .map(
@@ -153,7 +154,7 @@ function generateSpec(
 
 test.describe('${escaped(title)}', () => {
   test('page loads and has expected title', async ({ page }) => {
-    await page.goto('${url}');
+    await page.goto('${escaped(url)}');
     await expect(page).toHaveTitle(/${escaped(title).split(" ")[0] || ".*"}/);
   });
 
