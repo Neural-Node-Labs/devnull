@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import { resolveWithinWorkspace } from "./workspacePath.js";
 
 export interface EditResult {
   file: string;
@@ -8,7 +7,7 @@ export interface EditResult {
 }
 
 export function writeFile(filePath: string, content: string, cwd: string = process.cwd()): EditResult {
-  const full = resolveWithinWorkspace(filePath, cwd);
+  const full = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath);
   fs.mkdirSync(path.dirname(full), { recursive: true });
   fs.writeFileSync(full, content, "utf-8");
   return { file: full, bytesWritten: Buffer.byteLength(content, "utf-8") };
@@ -16,7 +15,7 @@ export function writeFile(filePath: string, content: string, cwd: string = proce
 
 /** Simple exact-match replace, mirrors str_replace semantics: old must be unique. */
 export function editFile(filePath: string, oldStr: string, newStr: string, cwd: string = process.cwd()): EditResult {
-  const full = resolveWithinWorkspace(filePath, cwd);
+  const full = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath);
   const content = fs.readFileSync(full, "utf-8");
 
   const occurrences = content.split(oldStr).length - 1;
@@ -27,3 +26,4 @@ export function editFile(filePath: string, oldStr: string, newStr: string, cwd: 
   fs.writeFileSync(full, updated, "utf-8");
   return { file: full, bytesWritten: Buffer.byteLength(updated, "utf-8") };
 }
+

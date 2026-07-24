@@ -15,11 +15,11 @@
 provider: deepseek
 base_url: https://api.deepseek.com/v1
 endpoint: /chat/completions
-model: deepseek-v4-pro    # non-thinking mode; use deepseek-v4-pro for RCA/Architect/Pentester where deep reasoning matters
+model: deepseek-v4-flash    # non-thinking mode; use deepseek-v4-pro for RCA/Architect/Pentester where deep reasoning matters
 api_key_env: DEEPSEEK_API_KEY
 max_tokens: 4096
 temperature: 0.0            # DeepSeek's own published guidance: 0.0 for code/math tasks (this is a coding agent)
-thinking: true              # always sent explicitly (enabled/disabled), never omitted
+thinking: false              # always sent explicitly (enabled/disabled), never omitted
 
 # Per-skill overrides: some skills benefit from thinking mode + higher reasoning effort even
 # if the default stays fast. reasoning_effort only takes effect when thinking is true.
