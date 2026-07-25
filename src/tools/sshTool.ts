@@ -3,6 +3,7 @@ import { Client, SFTPWrapper } from "ssh2";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Readable } from "node:stream";
+import { createTofuHostVerifier } from "./sshHostVerifier.js";
 
 export interface SshTarget {
   host: string;
@@ -64,8 +65,7 @@ function ssh2Exec(target: SshTarget, command: string, timeoutMs = 60_000): Promi
       password: target.password,
       readyTimeout: 10000,
       // Accept host key automatically
-      hostHash: undefined,
-      hostVerifier: () => true,
+      hostVerifier: createTofuHostVerifier(target.host, target.port ?? 22),
     });
 
     // Timeout
@@ -113,8 +113,7 @@ function ssh2Upload(target: SshTarget, localPath: string, remotePath: string, re
       username: target.user,
       password: target.password,
       readyTimeout: 10000,
-      hostHash: undefined,
-      hostVerifier: () => true,
+      hostVerifier: createTofuHostVerifier(target.host, target.port ?? 22),
     });
   });
 }
@@ -211,8 +210,7 @@ function ssh2Download(target: SshTarget, remotePath: string, localPath: string, 
       username: target.user,
       password: target.password,
       readyTimeout: 10000,
-      hostHash: undefined,
-      hostVerifier: () => true,
+      hostVerifier: createTofuHostVerifier(target.host, target.port ?? 22),
     });
   });
 }

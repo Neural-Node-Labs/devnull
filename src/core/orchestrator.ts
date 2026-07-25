@@ -5,6 +5,7 @@ import path from "node:path";
 import { LlmClient, LlmMessage, ReActStep, TelemetryInterface, LoadedSkill, Phase, LlmUsage, SubagentResult, ReActMemory, ScoreEntry, HealthScore, DEFAULT_HEALTH_SCORE } from "./types.js";
 import { SkillRegistry } from "./skillRegistry.js";
 import { TOOL_SCHEMAS } from "../tools/toolSchemas.js";
+import { filterToolsForSkills } from "../tools/toolSchemaFilter.js";
 import { dispatchToolCall } from "../tools/toolDispatcher.js";
 import { buildProtocolPrompt, writeTodo, appendTodoReview } from "./protocol.js";
 import { validateGoal, buildObservationTranscript } from "./goalValidator.js";
@@ -460,7 +461,8 @@ export class ReActOrchestrator {
     let validatorRejections = 0;
     let restartCount = 0;
     const maxValidatorRetries = this.opts.maxValidatorRetries ?? 2;
-    const validationEnabled = this.opts.validateGoal !== false; // default true
+    const skillsOptOutOfValidation = skills.length > 0 && skills.every((s) => s.header.skip_validation === true);
+    const validationEnabled = this.opts.validateGoal !== false && !skillsOptOutOfValidation; // default true
     const showConsole = this.opts.consoleThoughts !== false; // default true
 
     while (true) {
@@ -525,7 +527,7 @@ export class ReActOrchestrator {
 
       const spinner = new Spinner();
       if (showConsole) spinner.start(indent > 0 ? "Subagent thinking..." : "Thinking...");
-      const response = await this.llm.complete(messages, { tools: TOOL_SCHEMAS });
+      const response = await this.llm.complete(messages, { tools: filterToolsForSkills(skills) });
       if (showConsole) spinner.stop();
       this.addUsage(response.usage);
 
@@ -563,6 +565,20 @@ export class ReActOrchestrator {
             action: { tool: "goal_validator", input: { transcript } },
             observation: verdict,
           });
+
+          if (verdict.valid && verdict.failedOpen) {
+            // Distinct from a genuine pass: the validator's own response couldn't be parsed, so
+            // this completion is being accepted UNVERIFIED, not because it was actually checked
+            // and found sound. Surfaced separately so it doesn't just blend into telemetry as an
+            // ordinary validation pass.
+            await this.telemetry.logError(
+              { reason: `goal validator fail-open: ${verdict.reason}` },
+              "goal_validator"
+            );
+            if (!runOpts.isSubagent) {
+              console.log(`\n[goal validator] WARNING: validator response unparseable — accepting completion UNVERIFIED.`);
+            }
+          }
 
           if (!verdict.valid) {
             validatorRejections += 1;

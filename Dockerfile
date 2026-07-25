@@ -1,8 +1,15 @@
 # ─── Stage 1: Build ─────────────────────────────────────────────────────────
 FROM node:20-alpine AS builder
 
-# Install build toolchain for native addons (better-sqlite3)
-RUN apk add --no-cache python3 make g++
+# Install build toolchain for native addons (better-sqlite3), plus bash: package.json's
+# postinstall script (scripts/install.sh) requires a real bash, which Alpine does NOT ship by
+# default (its default shell is busybox ash). Without this, `npm install` below fails at the
+# postinstall lifecycle step with a bare "spawn bash ENOENT" -- this predates the review
+# (the same script ran as the "install" hook before), it just never surfaced because this
+# Dockerfile was never exercised in CI (see the ci.yml fix: Job 1 now runs on windows-latest
+# too, but the Docker jobs were and remain Linux-only, so this specific gap needed catching
+# by hand rather than by CI).
+RUN apk add --no-cache python3 make g++ bash
 
 WORKDIR /app
 
@@ -15,6 +22,12 @@ COPY tsconfig.json ./
 COPY src/ ./src/
 RUN npx tsc -p tsconfig.json
 
+# Drop devDependencies (typescript, vitest, ts-node, @types/*, etc.) now that the build is done
+# -- they were needed to run `tsc` above, but shipping them into the runtime image just adds
+# size and unnecessary attack surface (more installed packages = more transitive dependencies
+# that could carry a vulnerability) for something that never runs in production.
+RUN npm prune --omit=dev
+
 # ─── Stage 2: Runtime ───────────────────────────────────────────────────────
 FROM node:20-alpine AS runtime
 
@@ -23,7 +36,7 @@ RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
 WORKDIR /app
 
-# Copy built artifacts and production dependencies from builder
+# Copy built artifacts and production-only dependencies from builder
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./

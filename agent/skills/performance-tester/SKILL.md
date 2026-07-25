@@ -7,7 +7,7 @@ description: >
   profiling, or "is this fast/scalable enough".
 triggers: [performance, load test, "stress test", benchmark, latency, throughput, profiling, scalability, "soak test"]
 version: 1.0
-requires_tools: [read_tool, grep_tool, run_command_tool]
+requires_tools: [read_tool, grep_tool, run_command_tool, api_test_tool]
 composes_with: [architect, kubernetes-expert, docker-expert, rca]
 ---
 

@@ -7,7 +7,7 @@ description: >
   runtime issues.
 triggers: [docker, dockerfile, container, image, "docker-compose", "docker build", "multi-stage build"]
 version: 1.0
-requires_tools: [read_tool, glob_tool, grep_tool, write_edit_tool, run_command_tool, docker_deploy_ssh_tool]
+requires_tools: [read_tool, glob_tool, grep_tool, write_edit_tool, run_command_tool, docker_deploy_ssh_tool, docker_compose_deploy_tool]
 composes_with: [kubernetes-expert, devops, secops, performance-tester]
 ---
 

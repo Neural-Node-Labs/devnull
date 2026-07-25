@@ -6,6 +6,19 @@ export interface SkillHeader {
   version: string;
   requires_tools: string[];
   composes_with: string[];
+  /**
+   * Opt out of the independent goal-validation pass (see goalValidator.ts) for tasks routed to
+   * this skill. Deliberately a plain boolean, not free text: goalValidator.ts is intentionally
+   * isolated from skill body content (no tools, no skill instructions in its prompt) so a
+   * skill's own text can't talk the validator into accepting a bad completion -- that isolation
+   * stays intact. This field only lets the orchestrator skip calling the validator at all, for
+   * skills whose legitimate output is never going to have tool-call evidence behind it (e.g. a
+   * plain conversational reply to "hello", which would otherwise get flagged by the validator's
+   * "a claim needs an observation behind it" skepticism -- correctly, in general, but not for a
+   * skill that by design never calls tools). Defaults to false/undefined (validate as normal)
+   * for every skill that doesn't explicitly set it.
+   */
+  skip_validation?: boolean;
 }
 
 export interface LoadedSkill {

@@ -7,7 +7,7 @@ description: >
   test cases, or the Validation phase needs to decide pass/fail.
 triggers: [test, "unit test", "test case", qa, verify, validate, coverage, regression, "test suite"]
 version: 1.0
-requires_tools: [read_tool, glob_tool, grep_tool, run_command_tool]
+requires_tools: [read_tool, glob_tool, grep_tool, run_command_tool, api_test_tool]
 composes_with: [programmer, performance-tester, pentester, rca]
 ---
 

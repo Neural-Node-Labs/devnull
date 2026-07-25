@@ -1,4 +1,5 @@
 import * as cheerio from "cheerio";
+import { safeFetch } from "./ssrfGuard.js";
 
 export interface UrlSummary {
   url: string;
@@ -17,7 +18,7 @@ export interface UrlSummary {
  * on the meaningful text content.
  */
 export async function summarizeUrl(url: string): Promise<UrlSummary> {
-  const res = await fetch(url, {
+  const res = await safeFetch(url, {
     headers: {
       "User-Agent":
         "Mozilla/5.0 (compatible; devnull-summarizer/1.0; +https://github.com/neural-node-labs/devnull)",

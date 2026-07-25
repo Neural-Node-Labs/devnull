@@ -15,11 +15,22 @@
 provider: deepseek
 base_url: https://api.deepseek.com/v1
 endpoint: /chat/completions
-model: deepseek-v4-flash    # non-thinking mode; use deepseek-v4-pro for RCA/Architect/Pentester where deep reasoning matters
+# BUG FIX: this was previously "deepseek-v4-pro" with the comment "non-thinking mode" attached
+# to it -- v4-pro is the THINKING-mode model per the header comment above, so every skill
+# without an entry in `overrides` below (analyst, devops, docker-expert, kubernetes-expert,
+# performance-tester, playwright-ui-tester, programmer, secops, tester, conversation, and any
+# others without an override) was silently resolving to the expensive Pro+thinking tier for
+# every single call -- including a plain "hello" -- via resolveModelForSkill()'s
+# `override?.model ?? config.model` fallback. That also made the rca/architect/pentester
+# overrides below functionally inert, since they already matched what everything else was
+# getting by default. Fixed to the fast/cheap model, matching what the comments already said
+# the intent was.
+model: deepseek-v4-flash    # fast/cheap default; rca/architect/pentester override to v4-pro below
 api_key_env: DEEPSEEK_API_KEY
 max_tokens: 4096
 temperature: 0.0            # DeepSeek's own published guidance: 0.0 for code/math tasks (this is a coding agent)
-thinking: false              # always sent explicitly (enabled/disabled), never omitted
+thinking: false              # always sent explicitly (enabled/disabled), never omitted -- see the
+                             # same bug-fix note above: this was `true` by default, same issue
 
 # Per-skill overrides: some skills benefit from thinking mode + higher reasoning effort even
 # if the default stays fast. reasoning_effort only takes effect when thinking is true.

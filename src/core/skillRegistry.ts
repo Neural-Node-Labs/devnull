@@ -78,6 +78,23 @@ export class SkillRegistry {
   }
 
   /**
+   * True if `trigger` appears in `text` as a whole word/phrase, not as a substring of a larger
+   * word. Previously this was plain `text.includes(trigger)`, which is fine for multi-word or
+   * unusual triggers ("solution design", "docker-compose") but breaks down for short common
+   * ones -- e.g. "hi" would match inside "this", "which", "history", "shift", silently
+   * mis-routing unrelated tasks to whichever skill declared it as a trigger.
+   */
+  private triggerMatches(text: string, trigger: string): boolean {
+    const escaped = trigger.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (!/\w/.test(escaped)) {
+      // No word characters in the trigger at all (pure punctuation/symbols) -- \b wouldn't mean
+      // anything here, fall back to substring match.
+      return text.includes(trigger);
+    }
+    return new RegExp(`\\b${escaped}\\b`, "i").test(text);
+  }
+
+  /**
    * Route a task description to candidate skills by trigger-keyword match.
    * Returns skills ranked by match count, highest first. Multiple skills may
    * be selected — devnull composes them (see composes_with in each header).
@@ -88,7 +105,9 @@ export class SkillRegistry {
 
     const scored = [...this.headers.values()].map((h) => {
       const score = h.triggers.reduce(
-        (acc, t) => acc + (text.includes(t.toLowerCase()) ? 1 : 0),
+        //(acc, t) => acc + (this.triggerMatches(text, t.toLowerCase()) ? 1 : 0),
+                (acc, t) => acc + (text.includes(t.toLowerCase()) ? 1 : 0),
+
         0
       );
       return { header: h, score };
